@@ -265,36 +265,63 @@ if nav == "🔬 Analisi Pelle":
     # ── Foto ──────────────────────────────────────────────────────────────────
     if modo == "📷 Foto":
         st.info("Luce naturale diffusa · viso 80% del frame · no make up · no filtri")
+
+        # I file vengono letti e salvati in session_state subito dopo l'upload,
+        # prima che il rerun del button li resetti.
         files = st.file_uploader("3 immagini (JPG/PNG/HEIC)",
                                  type=["jpg","jpeg","png","heic"],
                                  accept_multiple_files=True, key="skin_up")
-        if files:
-            mappa = {}
-            cols  = st.columns(len(files))
-            opz   = ["Seleziona...","Fronte","Guancia","Mandibola"]
-            for i, f in enumerate(files):
-                with cols[i]:
-                    st.image(f, use_container_width=True)
-                    s = st.selectbox(f"Zona {i+1}", opz, key=f"z{i}")
-                    mappa[f.name] = (f, s)
 
-            zone  = [v for _,v in mappa.values() if v!="Seleziona..."]
-            if len(files)==3 and len(set(zone))==3:
+        # Salva i bytes dei file in session_state non appena arrivano
+        if files:
+            st.session_state.uploaded_files_bytes = {
+                f.name: f.read() for f in files
+            }
+            # Riporta il cursore all'inizio per la preview
+            for f in files:
+                f.seek(0)
+
+        # Mostra l'UI di selezione zona se ci sono file salvati
+        saved = st.session_state.get("uploaded_files_bytes", {})
+        if saved:
+            import io as _io
+            names = list(saved.keys())
+            mappa = {}
+            cols  = st.columns(len(names))
+            opz   = ["Seleziona...","Fronte","Guancia","Mandibola"]
+            for i, fname in enumerate(names):
+                with cols[i]:
+                    st.image(_io.BytesIO(saved[fname]), use_container_width=True)
+                    s = st.selectbox(f"Zona {i+1}", opz, key=f"z{i}")
+                    mappa[fname] = s
+
+            zone = [v for v in mappa.values() if v != "Seleziona..."]
+            if len(names) != 3:
+                st.info("Carica esattamente 3 foto.")
+            elif len(set(zone)) < 3:
+                st.warning("Seleziona 3 zone distinte.")
+            else:
                 st.success("Configurazione valida.")
                 if st.button("ANALIZZA", type="primary"):
                     res = {}
-                    for fn,(f,z) in mappa.items():
-                        if z=="Seleziona...": continue
-                        rgb = engine.process_image(f, z)
-                        L,a,b = engine.srgb_to_lab(rgb)
-                        L,a,b = calibrator.apply(L,a,b)
-                        res[z] = {"L*":L,"a*":a,"b*":b}
+                    with st.spinner("Elaborazione in corso..."):
+                        for fname, zona in mappa.items():
+                            if zona == "Seleziona...":
+                                continue
+                            img_bytes = saved[fname]
+                            from PIL import Image as _PIL
+                            pil_img = _PIL.open(_io.BytesIO(img_bytes)).convert("RGB")
+                            img_array = np.array(pil_img)
+                            roi = engine.extract_roi(img_array, zona)
+                            rgb = np.median(roi.reshape(-1, 3), axis=0)
+                            L,a,b = engine.srgb_to_lab(rgb)
+                            L,a,b = calibrator.apply(L,a,b)
+                            res[zona] = {"L*":L,"a*":a,"b*":b}
                     st.session_state.skin_data = {
                         "zones": res, "skin_type": skin_type,
                         "source": "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato")
                     }
-            elif len(files)!=3: st.info("Carica esattamente 3 foto.")
-            elif len(set(zone))<3: st.warning("Seleziona 3 zone distinte.")
+                    st.rerun()
 
     # ── Nix manuale ───────────────────────────────────────────────────────────
     else:
