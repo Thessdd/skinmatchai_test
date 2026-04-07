@@ -14,9 +14,13 @@ from sqlalchemy.orm import declarative_base, relationship, Session
 import enum as pyenum
 
 # ── Engine ────────────────────────────────────────────────────────────────────
-# SQLite per MVP. Per PostgreSQL: sostituire con
-# create_engine("postgresql://user:pass@host/db")
-ENGINE = create_engine("sqlite:///skinmatch.db", echo=False)
+# In locale: usa SQLite (nessuna configurazione richiesta)
+# In cloud:  legge DATABASE_URL dall'environment (Supabase / Railway / Render)
+import os
+_db_url = os.environ.get("DATABASE_URL", "sqlite:///skinmatch.db")
+if _db_url.startswith("postgres://"):
+    _db_url = _db_url.replace("postgres://", "postgresql://", 1)
+ENGINE = create_engine(_db_url, echo=False)
 Base   = declarative_base()
 
 
