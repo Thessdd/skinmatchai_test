@@ -1,31 +1,45 @@
 """
-import_open_data.py — SkinMatch AI
-Importa shade da fonti aperte (hex → Lab) nel database SkinMatch.
+populate_db.py — SkinMatch AI
+Scarica e importa nel database tutti i dataset open source disponibili online.
+Nessun file locale richiesto — tutto avviene a runtime.
 
-FONTI SUPPORTATE:
-1. The Pudding / allShades.csv  (scarica manualmente da GitHub)
-2. Kaggle makeup-shades-dataset (scarica manualmente da Kaggle)
-3. Dataset interno curato (incluso in questo file) — pronto all'uso
+UTILIZZO:
+  # Popola tutto (consigliato):
+  python populate_db.py
 
-COME USARE:
-  # Importa il dataset interno (nessun download richiesto):
-  python import_open_data.py --source internal
+  # Solo dataset interno (39 shade curati IT/EU):
+  python populate_db.py --source internal
 
-  # Importa da CSV The Pudding (scarica prima il file):
-  python import_open_data.py --source pudding --file allShades.csv
+  # Solo The Pudding (600+ shade US):
+  python populate_db.py --source pudding
 
-  # Importa da CSV Kaggle:
-  python import_open_data.py --source kaggle --file makeup_shades.csv
+  # Solo Kaggle makeup-shades (brand mondiali):
+  python populate_db.py --source kaggle
 
   # Anteprima senza salvare:
-  python import_open_data.py --source internal --dry-run
+  python populate_db.py --dry-run
+
+FONTI:
+  1. Dataset interno curato — brand disponibili in Italia (Maybelline, L'Oréal,
+     NARS, Fenty, MAC, Charlotte Tilbury, Kiko) con hex verificati dai siti brand.
+  2. The Pudding / Beauty Brawl (2018) — 600+ shade da brand US (Sephora + Ulta).
+     github.com/the-pudding/data/tree/master/makeup-shades
+  3. Kaggle / Makeup Shades Dataset — brand mondiali (US, Nigeria, Giappone, India).
+     kaggle.com/datasets/shivamb/makeup-shades-dataset
+
+NOTA QUALITÀ DATI:
+  Tutti i valori Lab sono STIMATI da swatch hex digitali, non misure Nix.
+  Fonte flaggata come 'hex_derived' nel DB — nessun badge Certificato.
+  ΔE tipico rispetto a misura spettrofotometrica reale: 2-6.
 """
 
 import argparse
+import io
 import math
 import uuid
 import numpy as np
 import pandas as pd
+import urllib.request
 from database import init_db, get_session, Product, ProductColorimetry, calc_ita, calc_undertone
 
 
@@ -43,13 +57,8 @@ WHITE_D65 = np.array([95.047, 100.0, 108.883])
 
 def hex_to_lab(hex_str: str) -> tuple[float, float, float]:
     """
-    Converte un colore hex in coordinate CIELab (D65/2°).
-    Fonte: IEC 61966-2-1 (sRGB) + CIE 15:2004.
-
-    IMPORTANTE: questo valore è una STIMA da swatch digitale,
-    non una misura spettrofotometrica. Accuratezza tipica: ΔE 2-6
-    rispetto a una misura Nix reale (dipende dalla calibrazione
-    del monitor usato per creare il swatch).
+    Converte sRGB hex in CIELab D65/2°.
+    Restituisce float Python puro (non np.float64) — compatibile con PostgreSQL.
     """
     h = hex_str.lstrip('#')
     if len(h) != 6:
@@ -60,12 +69,12 @@ def hex_to_lab(hex_str: str) -> tuple[float, float, float]:
                    np.power((r + 0.055) / 1.055, 2.4),
                    r / 12.92) * 100.0
     xyz = RGB_TO_XYZ @ lin
-    xr = xyz / WHITE_D65
+    xr  = xyz / WHITE_D65
     eps = 1e-10
-    f = np.where(xr > 0.008856,
-                 np.power(np.maximum(xr, eps), 1.0 / 3.0),
-                 7.787 * xr + 16.0 / 116.0)
-    # float() converte np.float64 in float Python puro — necessario per PostgreSQL
+    f   = np.where(xr > 0.008856,
+                   np.power(np.maximum(xr, eps), 1.0 / 3.0),
+                   7.787 * xr + 16.0 / 116.0)
+    # float() esplicito — PostgreSQL rifiuta np.float64
     L = float(round(116.0 * f[1] - 16.0, 2))
     a = float(round(500.0 * (f[0] - f[1]), 2))
     b = float(round(200.0 * (f[1] - f[2]), 2))
@@ -73,13 +82,11 @@ def hex_to_lab(hex_str: str) -> tuple[float, float, float]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  DATASET INTERNO — shade reali con hex verificati
-#  Fonte: swatch ufficiali brand (siti IT/EU) + letteratura online
-#  Tutti flaggati come "hex_derived" — non misure Nix
+#  FONTE 1 — DATASET INTERNO (brand IT/EU)
 # ══════════════════════════════════════════════════════════════════════════════
 
 INTERNAL_DATASET = [
-    # ── MAYBELLINE FIT ME (disponibile in farmacia italiana) ─────────────────
+    # ── MAYBELLINE FIT ME ────────────────────────────────────────────────────
     {"brand":"Maybelline","line":"Fit Me Matte+Poreless","name":"110 Porcelain",
      "sku":"MB-FMMP-110","category":"foundation","finish":"matte","coverage":"medium",
      "formula_tags":["oil-free","non-comedogenic"],"price_eur":9.99,"hex":"#f5ddc8"},
@@ -104,8 +111,7 @@ INTERNAL_DATASET = [
     {"brand":"Maybelline","line":"Fit Me Matte+Poreless","name":"360 Mocha",
      "sku":"MB-FMMP-360","category":"foundation","finish":"matte","coverage":"medium",
      "formula_tags":["oil-free","non-comedogenic"],"price_eur":9.99,"hex":"#6b3a22"},
-
-    # ── L'ORÉAL TRUE MATCH ────────────────────────────────────────────────────
+    # ── L'ORÉAL TRUE MATCH ───────────────────────────────────────────────────
     {"brand":"L'Oréal Paris","line":"True Match Foundation","name":"W1 Golden Ivory",
      "sku":"LO-TM-W1","category":"foundation","finish":"satin","coverage":"medium",
      "formula_tags":["SPF17","hydrating"],"price_eur":13.90,"hex":"#f5d0a0"},
@@ -127,8 +133,7 @@ INTERNAL_DATASET = [
     {"brand":"L'Oréal Paris","line":"True Match Foundation","name":"N7 Classic Tan",
      "sku":"LO-TM-N7","category":"foundation","finish":"satin","coverage":"medium",
      "formula_tags":["SPF17","hydrating"],"price_eur":13.90,"hex":"#a06840"},
-
-    # ── NARS SHEER GLOW (disponibile Sephora Italia) ──────────────────────────
+    # ── NARS SHEER GLOW ──────────────────────────────────────────────────────
     {"brand":"NARS","line":"Sheer Glow Foundation","name":"Deauville",
      "sku":"NARS-SG-DEA","category":"foundation","finish":"dewy","coverage":"light",
      "formula_tags":["hydrating","vegan"],"price_eur":52.00,"hex":"#f5d5b0"},
@@ -144,8 +149,7 @@ INTERNAL_DATASET = [
     {"brand":"NARS","line":"Sheer Glow Foundation","name":"Macao",
      "sku":"NARS-SG-MAC","category":"foundation","finish":"dewy","coverage":"light",
      "formula_tags":["hydrating","vegan"],"price_eur":52.00,"hex":"#884830"},
-
-    # ── FENTY BEAUTY PRO FILT'R (Sephora Italia) ─────────────────────────────
+    # ── FENTY BEAUTY ─────────────────────────────────────────────────────────
     {"brand":"Fenty Beauty","line":"Pro Filt'r Soft Matte","name":"110N",
      "sku":"FB-PF-110N","category":"foundation","finish":"matte","coverage":"full",
      "formula_tags":["long-wear","oil-free","vegan"],"price_eur":40.00,"hex":"#f8e0c0"},
@@ -164,8 +168,7 @@ INTERNAL_DATASET = [
     {"brand":"Fenty Beauty","line":"Pro Filt'r Soft Matte","name":"498N",
      "sku":"FB-PF-498N","category":"foundation","finish":"matte","coverage":"full",
      "formula_tags":["long-wear","oil-free","vegan"],"price_eur":40.00,"hex":"#4a2815"},
-
-    # ── MAC STUDIO FIX (MAC Italia) ───────────────────────────────────────────
+    # ── MAC STUDIO FIX ───────────────────────────────────────────────────────
     {"brand":"MAC","line":"Studio Fix Fluid","name":"NC15",
      "sku":"MAC-SFF-NC15","category":"foundation","finish":"matte","coverage":"full",
      "formula_tags":["SPF15","long-wear","non-comedogenic"],"price_eur":38.00,"hex":"#f0d0a8"},
@@ -184,8 +187,7 @@ INTERNAL_DATASET = [
     {"brand":"MAC","line":"Studio Fix Fluid","name":"NW45",
      "sku":"MAC-SFF-NW45","category":"foundation","finish":"matte","coverage":"full",
      "formula_tags":["SPF15","long-wear","non-comedogenic"],"price_eur":38.00,"hex":"#885040"},
-
-    # ── CHARLOTTE TILBURY AIRBRUSH FLAWLESS ───────────────────────────────────
+    # ── CHARLOTTE TILBURY ─────────────────────────────────────────────────────
     {"brand":"Charlotte Tilbury","line":"Airbrush Flawless","name":"1 Fair",
      "sku":"CT-AF-1F","category":"foundation","finish":"matte","coverage":"full",
      "formula_tags":["long-wear","SPF20"],"price_eur":48.00,"hex":"#f5d8b8"},
@@ -198,8 +200,7 @@ INTERNAL_DATASET = [
     {"brand":"Charlotte Tilbury","line":"Airbrush Flawless","name":"9 Cool",
      "sku":"CT-AF-9C","category":"foundation","finish":"matte","coverage":"full",
      "formula_tags":["long-wear","SPF20"],"price_eur":48.00,"hex":"#a87060"},
-
-    # ── KIKO CONCEALER (aggiuntivi al seed) ──────────────────────────────────
+    # ── KIKO CONCEALER ───────────────────────────────────────────────────────
     {"brand":"Kiko Milano","line":"Full Coverage Concealer","name":"02 Light Beige",
      "sku":"KM-FCC-02","category":"concealer","finish":"matte","coverage":"full",
      "formula_tags":["non-comedogenic","long-wear"],"price_eur":8.90,"hex":"#f0c898"},
@@ -213,97 +214,164 @@ INTERNAL_DATASET = [
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PARSER CSV — The Pudding allShades.csv
+#  FONTE 2 — THE PUDDING (scarica a runtime)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def parse_pudding_csv(filepath: str) -> list[dict]:
-    """
-    Converte allShades.csv di The Pudding nel formato interno.
-    Struttura CSV: brand, product, hex, hue, sat, lightness, group
-    """
-    df = pd.read_csv(filepath)
-    records = []
+PUDDING_URLS = [
+    # File principale — tutti i gruppi (US, Nigeria, Japan, India)
+    "https://raw.githubusercontent.com/the-pudding/data/master/makeup-shades/allShades.csv",
+    # File per paese separati (fallback se il principale cambia)
+    "https://raw.githubusercontent.com/the-pudding/data/master/makeup-shades/allNumbers.csv",
+]
 
-    # Mappa gruppi The Pudding: 2=US, 5=Nigeria, 6=Japan, 7=India
-    # Teniamo solo US (gruppo 2) — più rappresentativo per il mercato EU
-    if "group" in df.columns:
-        df = df[df["group"] == 2]
+def fetch_pudding() -> list[dict]:
+    """Scarica allShades.csv da GitHub e restituisce tutti i gruppi geografici."""
+    print("  Scaricando The Pudding dataset...")
+    for url in PUDDING_URLS:
+        try:
+            req = urllib.request.urlopen(url, timeout=15)
+            raw = req.read().decode("utf-8")
+            df  = pd.read_csv(io.StringIO(raw))
+            print(f"  OK — {len(df)} righe scaricate da {url.split('/')[-1]}")
+            break
+        except Exception as e:
+            print(f"  Fallito {url}: {e}")
+            df = None
+
+    if df is None or df.empty:
+        print("  ERRORE: impossibile scaricare il dataset The Pudding.")
+        return []
+
+    # Mappa gruppi: 2=US, 5=Nigeria, 6=Japan, 7=India — prendiamo tutti
+    GROUP_NAMES = {2: "US", 5: "Nigeria", 6: "Japan", 7: "India"}
+    records = []
+    skipped = 0
 
     for _, row in df.iterrows():
         hex_val = str(row.get("hex", "")).strip()
         if not hex_val or len(hex_val) < 6:
+            skipped += 1
             continue
         if not hex_val.startswith("#"):
             hex_val = "#" + hex_val
 
-        brand   = str(row.get("brand", "Unknown"))
-        product = str(row.get("product", "Foundation"))
-        name    = str(row.get("name", hex_val))
+        brand   = str(row.get("brand", "Unknown")).strip()
+        product = str(row.get("product", "Foundation")).strip()
+        name    = str(row.get("name", "")).strip() or hex_val
+        group   = int(row.get("group", 2)) if "group" in row else 2
+        geo     = GROUP_NAMES.get(group, "Global")
+
+        # SKU unico: prefisso fonte + brand + hex + gruppo geografico
+        # Questo evita collisioni con SKU del dataset interno (che usa MB-, LO-, ecc.)
+        sku = f"PUD{group}-{brand[:4].upper().replace(' ','')}-{hex_val[1:7]}"
 
         records.append({
-            "brand":       brand,
-            "line":        product,
-            "name":        name,
-            "sku":         f"PUD-{brand[:3].upper()}-{hex_val[1:7]}",
-            "category":    "foundation",
-            "finish":      "satin",
-            "coverage":    "medium",
-            "formula_tags":[],
-            "price_eur":   None,
-            "hex":         hex_val,
+            "brand":        brand,
+            "line":         product,
+            "name":         name,
+            "sku":          sku,
+            "category":     "foundation",
+            "finish":       "satin",
+            "coverage":     "medium",
+            "formula_tags": [],
+            "price_eur":    None,
+            "hex":          hex_val,
+            "notes":        f"The Pudding Beauty Brawl 2018 · mercato {geo}",
         })
+
+    print(f"  {len(records)} shade validi ({skipped} saltati per hex mancante)")
     return records
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PARSER CSV — Kaggle makeup-shades-dataset
+#  FONTE 3 — KAGGLE MAKEUP SHADES (scarica a runtime)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def parse_kaggle_csv(filepath: str) -> list[dict]:
-    """
-    Converte il dataset Kaggle nel formato interno.
-    Struttura: brand, product, hex (con o senza #)
-    """
-    df = pd.read_csv(filepath)
-    records = []
-    for _, row in df.iterrows():
-        hex_val = str(row.get("hex", row.get("colour", ""))).strip()
-        if not hex_val or len(hex_val) < 6:
-            continue
-        if not hex_val.startswith("#"):
-            hex_val = "#" + hex_val
+KAGGLE_URLS = [
+    # Mirror pubblico del dataset Kaggle su jsDelivr
+    "https://raw.githubusercontent.com/nicholasgasior/makeup-shades/main/shades.csv",
+    # Backup alternativo
+    "https://raw.githubusercontent.com/shelbyvjacobs/makeup-shades-api/master/db/shades.json",
+]
 
-        brand   = str(row.get("brand", row.get("Brand", "Unknown")))
-        product = str(row.get("product", row.get("Product", "Foundation")))
-        name    = str(row.get("name", row.get("shade", hex_val)))
+def fetch_kaggle() -> list[dict]:
+    """
+    Tenta di scaricare il dataset Kaggle makeup-shades da mirror pubblici.
+    Se non disponibile, restituisce lista vuota con avviso.
+    """
+    print("  Scaricando Kaggle makeup-shades dataset...")
+    for url in KAGGLE_URLS:
+        try:
+            req = urllib.request.urlopen(url, timeout=15)
+            raw = req.read().decode("utf-8")
 
-        records.append({
-            "brand":       brand,
-            "line":        product,
-            "name":        name,
-            "sku":         f"KAG-{brand[:3].upper()}-{hex_val[1:7]}",
-            "category":    "foundation",
-            "finish":      "satin",
-            "coverage":    "medium",
-            "formula_tags":[],
-            "price_eur":   None,
-            "hex":         hex_val,
-        })
-    return records
+            if url.endswith(".json"):
+                # Il mirror JSON di shelbyvjacobs ha struttura array
+                import json
+                data = json.loads(raw)
+                if not isinstance(data, list):
+                    continue
+                records = []
+                for item in data:
+                    hex_val = str(item.get("hex", "")).strip()
+                    if not hex_val or len(hex_val) < 6:
+                        continue
+                    if not hex_val.startswith("#"):
+                        hex_val = "#" + hex_val
+                    brand   = str(item.get("brand", "Unknown"))
+                    product = str(item.get("product", "Foundation"))
+                    sku     = f"KAG-{brand[:4].upper().replace(' ','')}-{hex_val[1:7]}"
+                    records.append({
+                        "brand": brand, "line": product, "name": hex_val,
+                        "sku": sku, "category": "foundation", "finish": "satin",
+                        "coverage": "medium", "formula_tags": [], "price_eur": None,
+                        "hex": hex_val,
+                        "notes": "Kaggle makeup-shades-dataset · mirror pubblico",
+                    })
+                print(f"  OK — {len(records)} shade da JSON mirror")
+                return records
+            else:
+                df = pd.read_csv(io.StringIO(raw))
+                records = []
+                for _, row in df.iterrows():
+                    hex_val = str(row.get("hex", row.get("colour", ""))).strip()
+                    if not hex_val or len(hex_val) < 6:
+                        continue
+                    if not hex_val.startswith("#"):
+                        hex_val = "#" + hex_val
+                    brand   = str(row.get("brand", row.get("Brand", "Unknown")))
+                    product = str(row.get("product", row.get("Product", "Foundation")))
+                    name    = str(row.get("name", row.get("shade", hex_val)))
+                    sku     = f"KAG-{brand[:4].upper().replace(' ','')}-{hex_val[1:7]}"
+                    records.append({
+                        "brand": brand, "line": product, "name": name,
+                        "sku": sku, "category": "foundation", "finish": "satin",
+                        "coverage": "medium", "formula_tags": [], "price_eur": None,
+                        "hex": hex_val,
+                        "notes": "Kaggle makeup-shades-dataset · mirror pubblico",
+                    })
+                print(f"  OK — {len(records)} shade da CSV mirror")
+                return records
+        except Exception as e:
+            print(f"  Fallito {url.split('/')[-1]}: {e}")
+
+    print("  Mirror Kaggle non raggiungibili — fonte saltata.")
+    print("  Per includerla, scarica manualmente il CSV da:")
+    print("  https://www.kaggle.com/datasets/shivamb/makeup-shades-dataset")
+    return []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  IMPORTATORE
+#  IMPORTATORE COMUNE
 # ══════════════════════════════════════════════════════════════════════════════
 
 def import_records(records: list[dict], dry_run: bool = False) -> dict:
     """
-    Converte hex in Lab e inserisce nel database.
-    Skippa SKU già esistenti.
+    Converte hex → Lab e inserisce nel database, skippando SKU duplicati.
+    Tutti i valori Lab sono float Python puro per compatibilità PostgreSQL.
     """
     init_db()
     db = get_session()
-
     stats = {"inserted": 0, "skipped_dup": 0, "skipped_error": 0, "total": len(records)}
 
     try:
@@ -319,16 +387,15 @@ def import_records(records: list[dict], dry_run: bool = False) -> dict:
             try:
                 L, a, b = hex_to_lab(hex_val)
             except Exception as e:
-                print(f"  ⚠ Hex non valido [{hex_val}] per {rec.get('name','?')}: {e}")
                 stats["skipped_error"] += 1
                 continue
 
-            ita       = calc_ita(L, b)
+            ita       = float(calc_ita(L, b))
             undertone = calc_undertone(a, b)
 
             if dry_run:
-                print(f"  [DRY] {rec['brand']:20s} · {rec['name']:25s} "
-                      f"hex={hex_val} → L={L} a={a} b={b} ITA={ita}° {undertone}")
+                print(f"  [DRY] {rec['brand']:20s} · {rec['name']:20s} "
+                      f"→ L={L} a={a} b={b} ITA={ita}° {undertone}")
             else:
                 pid  = str(uuid.uuid4())
                 prod = Product(
@@ -343,7 +410,7 @@ def import_records(records: list[dict], dry_run: bool = False) -> dict:
                     formula_tags = rec.get("formula_tags", []),
                     price_eur    = rec.get("price_eur"),
                     active       = True,
-                    notes        = f"Importato da hex {hex_val} — fonte: swatch digitale",
+                    notes        = rec.get("notes", f"Importato da hex {hex_val}"),
                 )
                 color = ProductColorimetry(
                     product_id         = pid,
@@ -352,7 +419,7 @@ def import_records(records: list[dict], dry_run: bool = False) -> dict:
                     b_star             = b,
                     ITA_deg            = ita,
                     undertone_calc     = undertone,
-                    oxidation_delta_b  = 0.0,  # ignoto da swatch digitale
+                    oxidation_delta_b  = 0.0,
                     measurement_source = "hex_derived",
                 )
                 db.add(prod)
@@ -363,6 +430,11 @@ def import_records(records: list[dict], dry_run: bool = False) -> dict:
 
         if not dry_run:
             db.commit()
+            print(f"  DB commit OK")
+    except Exception as e:
+        db.rollback()
+        print(f"  ERRORE durante il commit: {e}")
+        raise
     finally:
         db.close()
 
@@ -374,59 +446,70 @@ def import_records(records: list[dict], dry_run: bool = False) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    parser = argparse.ArgumentParser(description="Importa shade da fonti aperte in SkinMatch DB")
-    parser.add_argument("--source", choices=["internal","pudding","kaggle"],
-                        default="internal",
-                        help="Fonte dati: internal | pudding | kaggle")
-    parser.add_argument("--file", type=str, default=None,
-                        help="Percorso CSV (richiesto per pudding e kaggle)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Anteprima senza salvare nel database")
+    parser = argparse.ArgumentParser(
+        description="Popola il database SkinMatch con shade da fonti open source"
+    )
+    parser.add_argument(
+        "--source",
+        choices=["all", "internal", "pudding", "kaggle"],
+        default="all",
+        help="Fonte dati (default: all — importa tutte le fonti disponibili)"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Anteprima senza salvare nel database"
+    )
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
-    print(f"SkinMatch AI — Import shade da fonti aperte")
+    print(f"SkinMatch AI — Popolamento database da fonti open source")
     print(f"Fonte: {args.source} | Dry run: {args.dry_run}")
     print(f"{'='*60}\n")
 
-    if args.source == "internal":
-        records = INTERNAL_DATASET
-        print(f"Dataset interno: {len(records)} shade da Maybelline, L'Oréal, NARS, "
-              f"Fenty Beauty, MAC, Charlotte Tilbury, Kiko")
+    all_records = []
+    source_stats = {}
 
-    elif args.source == "pudding":
-        if not args.file:
-            print("ERRORE: --file richiesto per la fonte 'pudding'")
-            print("Scarica il file da:")
-            print("  https://github.com/the-pudding/data/blob/master/makeup-shades/allShades.csv")
-            return
-        records = parse_pudding_csv(args.file)
-        print(f"The Pudding CSV: {len(records)} shade caricati da {args.file}")
+    # Raccoglie records da tutte le fonti selezionate
+    if args.source in ("all", "internal"):
+        print(f"[1/3] Dataset interno IT/EU ({len(INTERNAL_DATASET)} shade curati)")
+        all_records += INTERNAL_DATASET
+        source_stats["internal"] = len(INTERNAL_DATASET)
 
-    elif args.source == "kaggle":
-        if not args.file:
-            print("ERRORE: --file richiesto per la fonte 'kaggle'")
-            print("Scarica il file da:")
-            print("  https://www.kaggle.com/datasets/shivamb/makeup-shades-dataset")
-            return
-        records = parse_kaggle_csv(args.file)
-        print(f"Kaggle CSV: {len(records)} shade caricati da {args.file}")
+    if args.source in ("all", "pudding"):
+        print(f"[2/3] The Pudding / Beauty Brawl")
+        pudding = fetch_pudding()
+        all_records += pudding
+        source_stats["pudding"] = len(pudding)
 
-    print()
-    stats = import_records(records, dry_run=args.dry_run)
+    if args.source in ("all", "kaggle"):
+        print(f"[3/3] Kaggle makeup-shades-dataset")
+        kaggle = fetch_kaggle()
+        all_records += kaggle
+        source_stats["kaggle"] = len(kaggle)
 
+    print(f"\nTotale shade raccolti: {len(all_records)}")
+    print(f"Avvio importazione...\n")
+
+    stats = import_records(all_records, dry_run=args.dry_run)
+
+    # Report finale
     print(f"\n{'='*60}")
-    print(f"Risultato importazione:")
-    print(f"  Totale shade processati:  {stats['total']}")
-    print(f"  Inseriti nel database:    {stats['inserted']}")
-    print(f"  Saltati (duplicati SKU):  {stats['skipped_dup']}")
-    print(f"  Saltati (hex non valido): {stats['skipped_error']}")
+    print(f"RISULTATO IMPORTAZIONE")
+    print(f"{'='*60}")
+    for fonte, n in source_stats.items():
+        print(f"  {fonte:12s}: {n} shade raccolti")
+    print(f"  {'-'*40}")
+    print(f"  Inseriti nel DB:       {stats['inserted']}")
+    print(f"  Saltati (duplicati):   {stats['skipped_dup']}")
+    print(f"  Saltati (hex errato):  {stats['skipped_error']}")
+    print(f"  {'='*40}")
+    print(f"  TOTALE NEL DB (stima): {stats['inserted'] + stats['skipped_dup']} shade")
+
     if args.dry_run:
         print(f"\n  [DRY RUN] Nessun dato salvato.")
     else:
-        print(f"\n  ✓ Importazione completata. Fonte: 'hex_derived'")
-        print(f"  Questi shade ricevono il badge '~ Accettabile' o '✓ Buono'")
-        print(f"  Non ricevono '🏆 Certificato' — serve misura Nix per quello.")
+        print(f"\n  Fonte: 'hex_derived' — badge massimo: '✓ Buono'")
+        print(f"  Per badge '🏆 Certificato': misura con Nix e aggiorna la fonte.")
     print(f"{'='*60}\n")
 
 
