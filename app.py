@@ -273,31 +273,26 @@ if nav == "🔬 Analisi Pelle":
                                  type=["jpg","jpeg","png","heic"],
                                  accept_multiple_files=True, key="skin_up")
 
-        # Ogni volta che arrivano nuovi file, salva bytes + reset zone
-        if files:
-            new_bytes = {f.name: f.read() for f in files}
-            if new_bytes != st.session_state.get("uploaded_files_bytes", {}):
-                st.session_state.uploaded_files_bytes = new_bytes
-                st.session_state.zone_map = {}  # reset selezioni zona
-            for f in files:
-                f.seek(0)
+        # Salva bytes in session_state non appena arrivano 3 file
+        # Usa i nomi come chiave — evita confronto bytes su file grandi (HEIC 1.5MB)
+        if files and len(files) == 3:
+            new_names = sorted(f.name for f in files)
+            old_names = sorted(st.session_state.get("uploaded_files_bytes", {}).keys())
+            if new_names != old_names:
+                st.session_state.uploaded_files_bytes = {f.name: f.read() for f in files}
+                st.session_state.zone_map = {}
 
         saved = st.session_state.get("uploaded_files_bytes", {})
-        if not saved:
-            st.info("Carica 3 foto per continuare.")
-        else:
-            names = list(saved.keys())
-            if len(names) != 3:
-                st.info("Carica esattamente 3 foto.")
-            else:
-                # Selezione zona — persiste in session_state tra i rerun
-                if "zone_map" not in st.session_state:
-                    st.session_state.zone_map = {}
 
-                cols = st.columns(3)
-                opz  = ["Seleziona...","Fronte","Guancia","Mandibola"]
-                for i, fname in enumerate(names):
-                    with cols[i]:
+        if len(saved) == 3:
+            names = list(saved.keys())
+            if "zone_map" not in st.session_state:
+                st.session_state.zone_map = {}
+
+            cols = st.columns(3)
+            opz  = ["Seleziona...","Fronte","Guancia","Mandibola"]
+            for i, fname in enumerate(names):
+                with cols[i]:
                         st.image(_io.BytesIO(saved[fname]), use_container_width=True)
                         # Recupera la selezione precedente se esiste
                         prev = st.session_state.zone_map.get(fname, "Seleziona...")
@@ -305,14 +300,14 @@ if nav == "🔬 Analisi Pelle":
                         sel  = st.selectbox(f"Zona {i+1}", opz, index=idx, key=f"z{i}")
                         st.session_state.zone_map[fname] = sel
 
-                zone_map  = st.session_state.zone_map
-                zone_vals = [v for v in zone_map.values() if v != "Seleziona..."]
+            zone_map  = st.session_state.zone_map
+            zone_vals = [v for v in zone_map.values() if v != "Seleziona..."]
 
-                if len(set(zone_vals)) < 3:
-                    st.warning("Seleziona 3 zone distinte (Fronte, Guancia, Mandibola).")
-                else:
-                    st.success("Configurazione valida — pronto per l'analisi.")
-                    if st.button("ANALIZZA", type="primary", key="btn_analizza"):
+            if len(set(zone_vals)) < 3:
+                st.warning("Seleziona 3 zone distinte (Fronte, Guancia, Mandibola).")
+            else:
+                st.success("Configurazione valida — pronto per l'analisi.")
+                if st.button("ANALIZZA", type="primary", key="btn_analizza"):
                         res = {}
                         with st.spinner("Elaborazione..."):
                             for fname, zona in zone_map.items():
