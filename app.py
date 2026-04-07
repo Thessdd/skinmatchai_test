@@ -266,62 +266,80 @@ if nav == "🔬 Analisi Pelle":
     if modo == "📷 Foto":
         st.info("Luce naturale diffusa · viso 80% del frame · no make up · no filtri")
 
-        # I file vengono letti e salvati in session_state subito dopo l'upload,
-        # prima che il rerun del button li resetti.
+        import io as _io
+        from PIL import Image as _PIL
+
         files = st.file_uploader("3 immagini (JPG/PNG/HEIC)",
                                  type=["jpg","jpeg","png","heic"],
                                  accept_multiple_files=True, key="skin_up")
 
-        # Salva i bytes dei file in session_state non appena arrivano
+        # Ogni volta che arrivano nuovi file, salva bytes + reset zone
         if files:
-            st.session_state.uploaded_files_bytes = {
-                f.name: f.read() for f in files
-            }
-            # Riporta il cursore all'inizio per la preview
+            new_bytes = {f.name: f.read() for f in files}
+            if new_bytes != st.session_state.get("uploaded_files_bytes", {}):
+                st.session_state.uploaded_files_bytes = new_bytes
+                st.session_state.zone_map = {}  # reset selezioni zona
             for f in files:
                 f.seek(0)
 
-        # Mostra l'UI di selezione zona se ci sono file salvati
         saved = st.session_state.get("uploaded_files_bytes", {})
-        if saved:
-            import io as _io
+        if not saved:
+            st.info("Carica 3 foto per continuare.")
+        else:
             names = list(saved.keys())
-            mappa = {}
-            cols  = st.columns(len(names))
-            opz   = ["Seleziona...","Fronte","Guancia","Mandibola"]
-            for i, fname in enumerate(names):
-                with cols[i]:
-                    st.image(_io.BytesIO(saved[fname]), use_container_width=True)
-                    s = st.selectbox(f"Zona {i+1}", opz, key=f"z{i}")
-                    mappa[fname] = s
-
-            zone = [v for v in mappa.values() if v != "Seleziona..."]
             if len(names) != 3:
                 st.info("Carica esattamente 3 foto.")
-            elif len(set(zone)) < 3:
-                st.warning("Seleziona 3 zone distinte.")
             else:
-                st.success("Configurazione valida.")
-                if st.button("ANALIZZA", type="primary"):
-                    res = {}
-                    with st.spinner("Elaborazione in corso..."):
-                        for fname, zona in mappa.items():
-                            if zona == "Seleziona...":
-                                continue
-                            img_bytes = saved[fname]
-                            from PIL import Image as _PIL
-                            pil_img = _PIL.open(_io.BytesIO(img_bytes)).convert("RGB")
-                            img_array = np.array(pil_img)
-                            roi = engine.extract_roi(img_array, zona)
-                            rgb = np.median(roi.reshape(-1, 3), axis=0)
-                            L,a,b = engine.srgb_to_lab(rgb)
-                            L,a,b = calibrator.apply(L,a,b)
-                            res[zona] = {"L*":L,"a*":a,"b*":b}
-                    st.session_state.skin_data = {
-                        "zones": res, "skin_type": skin_type,
-                        "source": "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato")
-                    }
-                    st.rerun()
+                # Selezione zona — persiste in session_state tra i rerun
+                if "zone_map" not in st.session_state:
+                    st.session_state.zone_map = {}
+
+                cols = st.columns(3)
+                opz  = ["Seleziona...","Fronte","Guancia","Mandibola"]
+                for i, fname in enumerate(names):
+                    with cols[i]:
+                        st.image(_io.BytesIO(saved[fname]), use_container_width=True)
+                        # Recupera la selezione precedente se esiste
+                        prev = st.session_state.zone_map.get(fname, "Seleziona...")
+                        idx  = opz.index(prev) if prev in opz else 0
+                        sel  = st.selectbox(f"Zona {i+1}", opz, index=idx, key=f"z{i}")
+                        st.session_state.zone_map[fname] = sel
+
+                zone_map  = st.session_state.zone_map
+                zone_vals = [v for v in zone_map.values() if v != "Seleziona..."]
+
+                if len(set(zone_vals)) < 3:
+                    st.warning("Seleziona 3 zone distinte (Fronte, Guancia, Mandibola).")
+                else:
+                    st.success("Configurazione valida — pronto per l'analisi.")
+                    if st.button("ANALIZZA", type="primary", key="btn_analizza"):
+                        res = {}
+                        with st.spinner("Elaborazione..."):
+                            for fname, zona in zone_map.items():
+                                if zona == "Seleziona...":
+                                    continue
+                                pil_img   = _PIL.open(_io.BytesIO(saved[fname])).convert("RGB")
+                                img_array = np.array(pil_img)
+                                h, w_img  = img_array.shape[:2]
+                                roi_map   = {
+                                    "Fronte":    (int(h*.15),int(h*.40),int(w_img*.30),int(w_img*.70)),
+                                    "Guancia":   (int(h*.35),int(h*.65),int(w_img*.20),int(w_img*.80)),
+                                    "Mandibola": (int(h*.65),int(h*.90),int(w_img*.25),int(w_img*.75)),
+                                }
+                                y1,y2,x1,x2 = roi_map.get(zona,(int(h*.35),int(h*.65),int(w_img*.35),int(w_img*.65)))
+                                roi       = img_array[y1:y2,x1:x2]
+                                if roi.size == 0:
+                                    roi = img_array[int(h*.35):int(h*.65),int(w_img*.35):int(w_img*.65)]
+                                rgb       = np.median(roi.reshape(-1, 3), axis=0)
+                                L,a,b     = engine.srgb_to_lab(rgb)
+                                L,a,b     = calibrator.apply(L,a,b)
+                                res[zona] = {"L*":L, "a*":a, "b*":b}
+                        # Salva risultato — persiste tra i rerun
+                        st.session_state.skin_data = {
+                            "zones":     res,
+                            "skin_type": skin_type,
+                            "source":    "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato")
+                        }
 
     # ── Nix manuale ───────────────────────────────────────────────────────────
     else:
@@ -351,8 +369,9 @@ if nav == "🔬 Analisi Pelle":
             }
 
     # ── Risultato analisi ─────────────────────────────────────────────────────
+    # Mostrato sempre se skin_data esiste, indipendentemente dalla modalità input
     if st.session_state.skin_data:
-        sd = st.session_state.skin_data
+        sd        = st.session_state.skin_data
         zones     = sd["zones"]
         s_type    = sd["skin_type"]
         s_source  = sd["source"]
@@ -377,7 +396,13 @@ if nav == "🔬 Analisi Pelle":
                       "Peso":f"{w.get(z,0)*100:.0f}%"}
                   for z,v in zones.items()})
 
-        st.success(f"SkinID™ salvato in sessione — vai su **Matching Prodotti** per trovare i fondotinta.")
+        col_ok, col_reset = st.columns([3,1])
+        col_ok.success("SkinID™ salvato — vai su **Matching Prodotti** per trovare i fondotinta.")
+        if col_reset.button("🔄 Nuova analisi"):
+            st.session_state.skin_data = None
+            st.session_state.uploaded_files_bytes = {}
+            st.session_state.zone_map = {}
+            st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
