@@ -218,10 +218,16 @@ INTERNAL_DATASET = [
 # ══════════════════════════════════════════════════════════════════════════════
 
 PUDDING_URLS = [
-    # File principale — tutti i gruppi (US, Nigeria, Japan, India)
-    "https://raw.githubusercontent.com/the-pudding/data/master/makeup-shades/allShades.csv",
-    # File per paese separati (fallback se il principale cambia)
-    "https://raw.githubusercontent.com/the-pudding/data/master/makeup-shades/allNumbers.csv",
+    # Repo originale (polygraph-cool — il repo the-pudding non contiene più makeup-shades)
+    "https://raw.githubusercontent.com/polygraph-cool/data/master/makeup-shades/allShades.csv",
+    # jsDelivr CDN mirror — spesso più affidabile di raw.githubusercontent.com
+    "https://cdn.jsdelivr.net/gh/polygraph-cool/data@master/makeup-shades/allShades.csv",
+    # Dataset foundation-names (dataset più recente, 6816 shade da Sephora+Ulta 2021)
+    "https://raw.githubusercontent.com/the-pudding/data/master/foundation-names/allShades.csv",
+    "https://cdn.jsdelivr.net/gh/the-pudding/data@master/foundation-names/allShades.csv",
+    # Sephora e Ulta separati come fallback
+    "https://raw.githubusercontent.com/the-pudding/data/master/foundation-names/sephora.csv",
+    "https://raw.githubusercontent.com/the-pudding/data/master/foundation-names/ulta.csv",
 ]
 
 def fetch_pudding() -> list[dict]:
@@ -288,10 +294,13 @@ def fetch_pudding() -> list[dict]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 KAGGLE_URLS = [
-    # Mirror pubblico del dataset Kaggle su jsDelivr
-    "https://raw.githubusercontent.com/nicholasgasior/makeup-shades/main/shades.csv",
-    # Backup alternativo
+    # shelbyvjacobs mirror — dati da the-pudding beauty brawl, formato JSON
     "https://raw.githubusercontent.com/shelbyvjacobs/makeup-shades-api/master/db/shades.json",
+    # CDN mirror jsDelivr del repo shelbyvjacobs
+    "https://cdn.jsdelivr.net/gh/shelbyvjacobs/makeup-shades-api@master/db/shades.json",
+    # kaylakremer/tensor-shade — dati pudding modificati con shade names
+    "https://raw.githubusercontent.com/kaylakremer/tensor-shade/master/src/shades.json",
+    "https://cdn.jsdelivr.net/gh/kaylakremer/tensor-shade@master/src/shades.json",
 ]
 
 def fetch_kaggle() -> list[dict]:
@@ -445,6 +454,22 @@ def import_records(records: list[dict], dry_run: bool = False) -> dict:
 #  MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
+def test_urls():
+    """Testa la raggiungibilità di tutti gli URL configurati."""
+    import urllib.request
+    print("\nTest connettività URL:\n")
+    for label, urls in [("The Pudding", PUDDING_URLS), ("Kaggle mirror", KAGGLE_URLS)]:
+        print(f"  [{label}]")
+        for url in urls:
+            try:
+                req = urllib.request.urlopen(url, timeout=8)
+                size = len(req.read(1000))
+                print(f"  ✓ OK  {url.split('/')[-1]:30s}  ({size} bytes preview)")
+            except Exception as e:
+                print(f"  ✗ ERR {url.split('/')[-1]:30s}  {e}")
+        print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Popola il database SkinMatch con shade da fonti open source"
@@ -459,7 +484,15 @@ def main():
         "--dry-run", action="store_true",
         help="Anteprima senza salvare nel database"
     )
+    parser.add_argument(
+        "--test-urls", action="store_true",
+        help="Testa la raggiungibilità degli URL senza importare nulla"
+    )
     args = parser.parse_args()
+
+    if args.test_urls:
+        test_urls()
+        return
 
     print(f"\n{'='*60}")
     print(f"SkinMatch AI — Popolamento database da fonti open source")
