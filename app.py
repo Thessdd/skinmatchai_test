@@ -312,6 +312,10 @@ if nav == "🔬 Analisi Pelle":
                 st.warning("Seleziona 3 zone distinte (Fronte, Guancia, Mandibola).")
             else:
                 st.success("Configurazione valida — pronto per l'analisi.")
+                # DEBUG — rimuovere dopo il fix
+                st.write("DEBUG zone_map:", st.session_state.get("zone_map", {}))
+                st.write("DEBUG saved keys:", list(st.session_state.get("uploaded_files_bytes", {}).keys()))
+
                 if st.button("ANALIZZA", type="primary", key="btn_analizza"):
                         res = {}
                         errori = []
