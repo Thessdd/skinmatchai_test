@@ -273,14 +273,18 @@ if nav == "🔬 Analisi Pelle":
                                  type=["jpg","jpeg","png","heic"],
                                  accept_multiple_files=True, key="skin_up")
 
-        # Salva bytes in session_state non appena arrivano 3 file
-        # Usa i nomi come chiave — evita confronto bytes su file grandi (HEIC 1.5MB)
+        # Salva bytes in session_state non appena arrivano 3 file nuovi.
+        # IMPORTANTE: non toccare uploaded_files_bytes se files è vuoto —
+        # dopo il click ANALIZZA Streamlit fa rerun con files=[] e svuoterebbe i dati.
         if files and len(files) == 3:
             new_names = sorted(f.name for f in files)
             old_names = sorted(st.session_state.get("uploaded_files_bytes", {}).keys())
             if new_names != old_names:
+                # Solo se sono file davvero nuovi — salva e resetta zone
                 st.session_state.uploaded_files_bytes = {f.name: f.read() for f in files}
                 st.session_state.zone_map = {}
+        # Se files è vuoto ma abbiamo già i bytes salvati: non fare nulla.
+        # Il rerun post-ANALIZZA non deve cancellare i dati in session_state.
 
         saved = st.session_state.get("uploaded_files_bytes", {})
 
