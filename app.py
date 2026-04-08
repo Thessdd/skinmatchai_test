@@ -199,7 +199,8 @@ st.set_page_config(page_title="SkinMatch AI", page_icon="🧬", layout="wide")
 
 # Session state
 for k,v in [("engine",SkinIDEngine()),("calibrator",ColorCheckerCalibrator()),
-            ("calib_result",None),("skin_data",None)]:
+            ("calib_result",None),("skin_data",None),
+            ("uploaded_files_bytes",{}),("zone_map",{}),("show_result",False)]:
     if k not in st.session_state: st.session_state[k] = v
 
 engine     = st.session_state.engine
@@ -313,32 +314,46 @@ if nav == "🔬 Analisi Pelle":
                 st.success("Configurazione valida — pronto per l'analisi.")
                 if st.button("ANALIZZA", type="primary", key="btn_analizza"):
                         res = {}
+                        errori = []
                         with st.spinner("Elaborazione..."):
                             for fname, zona in zone_map.items():
                                 if zona == "Seleziona...":
                                     continue
-                                pil_img   = _PIL.open(_io.BytesIO(saved[fname])).convert("RGB")
-                                img_array = np.array(pil_img)
-                                h, w_img  = img_array.shape[:2]
-                                roi_map   = {
-                                    "Fronte":    (int(h*.15),int(h*.40),int(w_img*.30),int(w_img*.70)),
-                                    "Guancia":   (int(h*.35),int(h*.65),int(w_img*.20),int(w_img*.80)),
-                                    "Mandibola": (int(h*.65),int(h*.90),int(w_img*.25),int(w_img*.75)),
-                                }
-                                y1,y2,x1,x2 = roi_map.get(zona,(int(h*.35),int(h*.65),int(w_img*.35),int(w_img*.65)))
-                                roi       = img_array[y1:y2,x1:x2]
-                                if roi.size == 0:
-                                    roi = img_array[int(h*.35):int(h*.65),int(w_img*.35):int(w_img*.65)]
-                                rgb       = np.median(roi.reshape(-1, 3), axis=0)
-                                L,a,b     = engine.srgb_to_lab(rgb)
-                                L,a,b     = calibrator.apply(L,a,b)
-                                res[zona] = {"L*":L, "a*":a, "b*":b}
-                        # Salva risultato — persiste tra i rerun
-                        st.session_state.skin_data = {
-                            "zones":     res,
-                            "skin_type": skin_type,
-                            "source":    "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato")
-                        }
+                                try:
+                                    pil_img   = _PIL.open(_io.BytesIO(saved[fname])).convert("RGB")
+                                    img_array = np.array(pil_img)
+                                    h, w_img  = img_array.shape[:2]
+                                    roi_coords = {
+                                        "Fronte":    (int(h*.15),int(h*.40),int(w_img*.30),int(w_img*.70)),
+                                        "Guancia":   (int(h*.35),int(h*.65),int(w_img*.20),int(w_img*.80)),
+                                        "Mandibola": (int(h*.65),int(h*.90),int(w_img*.25),int(w_img*.75)),
+                                    }
+                                    y1,y2,x1,x2 = roi_coords.get(zona,(int(h*.35),int(h*.65),int(w_img*.35),int(w_img*.65)))
+                                    roi       = img_array[y1:y2,x1:x2]
+                                    if roi.size == 0:
+                                        roi = img_array[int(h*.35):int(h*.65),int(w_img*.35):int(w_img*.65)]
+                                    rgb       = np.median(roi.reshape(-1, 3), axis=0)
+                                    L,a,b     = engine.srgb_to_lab(rgb)
+                                    L,a,b     = calibrator.apply(L,a,b)
+                                    res[zona] = {"L*":L, "a*":a, "b*":b}
+                                except Exception as e:
+                                    errori.append(f"{zona}: {e}")
+
+                        if errori:
+                            st.error("Errori durante elaborazione: " + " | ".join(errori))
+                        elif not res:
+                            st.error("Nessun risultato prodotto — zone non mappate correttamente.")
+                        else:
+                            # Salva risultato e forza visualizzazione immediata
+                            st.session_state.skin_data = {
+                                "zones":     res,
+                                "skin_type": skin_type,
+                                "source":    "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato"),
+                                "analisi_ok": True,
+                            }
+                            st.session_state.show_result = True
+                            st.success(f"Analisi completata — {len(res)} zone elaborate.")
+                            st.rerun()
 
     # ── Nix manuale ───────────────────────────────────────────────────────────
     else:
@@ -368,7 +383,11 @@ if nav == "🔬 Analisi Pelle":
             }
 
     # ── Risultato analisi ─────────────────────────────────────────────────────
-    # Mostrato sempre se skin_data esiste, indipendentemente dalla modalità input
+    # Mostrato sempre se skin_data esiste, indipendentemente dalla modalità input.
+    # show_result viene impostato a True subito dopo l'analisi per forzare la visibilità.
+    if st.session_state.get("show_result"):
+        st.session_state.show_result = False  # reset flag, risultato già in skin_data
+
     if st.session_state.skin_data:
         sd        = st.session_state.skin_data
         zones     = sd["zones"]
