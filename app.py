@@ -200,7 +200,7 @@ st.set_page_config(page_title="SkinMatch AI", page_icon="🧬", layout="wide")
 # Session state
 for k,v in [("engine",SkinIDEngine()),("calibrator",ColorCheckerCalibrator()),
             ("calib_result",None),("skin_data",None),
-            ("uploaded_files_bytes",{}),("zone_map",{}),("show_result",False)]:
+            ("uploaded_files_bytes",{}),("zone_map",{})]:
     if k not in st.session_state: st.session_state[k] = v
 
 engine     = st.session_state.engine
@@ -312,9 +312,6 @@ if nav == "🔬 Analisi Pelle":
                 st.warning("Seleziona 3 zone distinte (Fronte, Guancia, Mandibola).")
             else:
                 st.success("Configurazione valida — pronto per l'analisi.")
-                # DEBUG — rimuovere dopo il fix
-                st.write("DEBUG zone_map:", st.session_state.get("zone_map", {}))
-                st.write("DEBUG saved keys:", list(st.session_state.get("uploaded_files_bytes", {}).keys()))
 
                 if st.button("ANALIZZA", type="primary", key="btn_analizza"):
                         res = {}
@@ -348,16 +345,15 @@ if nav == "🔬 Analisi Pelle":
                         elif not res:
                             st.error("Nessun risultato prodotto — zone non mappate correttamente.")
                         else:
-                            # Salva risultato e forza visualizzazione immediata
                             st.session_state.skin_data = {
                                 "zones":     res,
                                 "skin_type": skin_type,
                                 "source":    "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato"),
                                 "analisi_ok": True,
                             }
-                            st.session_state.show_result = True
                             st.success(f"Analisi completata — {len(res)} zone elaborate.")
-                            st.rerun()
+                            # Non chiamare st.rerun(): interrompe lo script e il blocco
+                            # «Risultato analisi» più sotto non viene eseguito in questa run.
 
     # ── Nix manuale ───────────────────────────────────────────────────────────
     else:
@@ -387,11 +383,6 @@ if nav == "🔬 Analisi Pelle":
             }
 
     # ── Risultato analisi ─────────────────────────────────────────────────────
-    # Mostrato sempre se skin_data esiste, indipendentemente dalla modalità input.
-    # show_result viene impostato a True subito dopo l'analisi per forzare la visibilità.
-    if st.session_state.get("show_result"):
-        st.session_state.show_result = False  # reset flag, risultato già in skin_data
-
     if st.session_state.skin_data:
         sd        = st.session_state.skin_data
         zones     = sd["zones"]
