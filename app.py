@@ -327,12 +327,20 @@ if nav == "🔬 Analisi Pelle":
                 st.warning("Seleziona 3 zone distinte (Fronte, Guancia, Mandibola).")
             else:
                 st.success("Configurazione valida — pronto per l'analisi.")
+                # Form + submit: st.button qui dentro non è affidabile al 2° click (widget annidati).
+                with st.form("form_analizza_foto", clear_on_submit=False):
+                    do_analizza = st.form_submit_button("ANALIZZA", type="primary")
 
-                if st.button("ANALIZZA", type="primary", key="btn_analizza"):
+                if do_analizza:
+                    zm = dict(st.session_state.zone_map)
+                    zv = [v for v in zm.values() if v != "Seleziona..."]
+                    if len(set(zv)) < 3:
+                        st.error("Seleziona 3 zone distinte (Fronte, Guancia, Mandibola) prima di analizzare.")
+                    else:
                         res = {}
                         errori = []
                         with st.spinner("Elaborazione..."):
-                            for fname, zona in zone_map.items():
+                            for fname, zona in zm.items():
                                 if zona == "Seleziona...":
                                     continue
                                 try:
@@ -351,7 +359,9 @@ if nav == "🔬 Analisi Pelle":
                                     rgb       = np.median(roi.reshape(-1, 3), axis=0)
                                     L,a,b     = engine.srgb_to_lab(rgb)
                                     L,a,b     = calibrator.apply(L,a,b)
-                                    res[zona] = {"L*":L, "a*":a, "b*":b}
+                                    res[zona] = {
+                                        "L*": float(L), "a*": float(a), "b*": float(b),
+                                    }
                                 except Exception as e:
                                     errori.append(f"{zona}: {e}")
 
@@ -367,8 +377,6 @@ if nav == "🔬 Analisi Pelle":
                                 "analisi_ok": True,
                             }
                             st.success(f"Analisi completata — {len(res)} zone elaborate.")
-                            # Non chiamare st.rerun(): interrompe lo script e il blocco
-                            # «Risultato analisi» più sotto non viene eseguito in questa run.
 
     # ── Nix manuale ───────────────────────────────────────────────────────────
     else:
@@ -391,10 +399,16 @@ if nav == "🔬 Analisi Pelle":
             v = res[z]
             recap[i].metric(z, f"L={v['L*']} a={v['a*']} b={v['b*']}")
 
-        if st.button("CALCOLA SKINID™", type="primary"):
+        with st.form("form_calc_nix", clear_on_submit=False):
+            calc_nix = st.form_submit_button("CALCOLA SKINID™", type="primary")
+        if calc_nix:
             st.session_state.skin_data = {
-                "zones": res, "skin_type": skin_type,
-                "source": "Nix Spectro L · D65/2° · manuale"
+                "zones": {
+                    z: {"L*": float(v["L*"]), "a*": float(v["a*"]), "b*": float(v["b*"])}
+                    for z, v in res.items()
+                },
+                "skin_type": skin_type,
+                "source": "Nix Spectro L · D65/2° · manuale",
             }
 
     # ── Risultato analisi ─────────────────────────────────────────────────────
