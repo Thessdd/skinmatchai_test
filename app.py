@@ -3,6 +3,8 @@ SkinMatch AI — app_v7.py
 Pipeline completa: analisi pelle + database prodotti + matching colorimetrico.
 """
 
+import copy
+import json
 import math
 import streamlit as st
 import numpy as np
@@ -10,7 +12,8 @@ from PIL import Image
 import pillow_heif
 from database import (
     init_db, seed_demo_data, get_session,
-    Product, ProductColorimetry, SkinProfile, Match,
+    Product, ProductColorimetry, SkinProfile, Match, SavedClientSkin,
+    list_saved_client_skins,
     find_matches, calc_ita, calc_undertone,
     MATCH_WEIGHTS
 )
@@ -189,6 +192,18 @@ def mostra_skinid_header(skin_id, avg_ita, categoria, undertone, avg_L, ri_data,
     c3.metric("Undertone", undertone)
     c4.metric("L* globale", f"{avg_L:.1f}")
     c5.metric("Reactivity", ri_data["livello"])
+
+
+def skin_data_from_saved_row(row: SavedClientSkin) -> dict:
+    zones = row.zones_json
+    if isinstance(zones, str):
+        zones = json.loads(zones)
+    return {
+        "zones": copy.deepcopy(zones),
+        "skin_type": row.skin_type,
+        "source": row.source,
+        "saved_client_id": row.saved_id,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -409,8 +424,70 @@ if nav == "🔬 Analisi Pelle":
                       "Peso":f"{w.get(z,0)*100:.0f}%"}
                   for z,v in zones.items()})
 
-        col_ok, col_reset = st.columns([3,1])
-        col_ok.success("SkinID™ salvato — vai su **Matching Prodotti** per trovare i fondotinta.")
+        st.divider()
+        st.subheader("Salvataggio profilo cliente")
+        st.caption(
+            "I dati sono memorizzati nel database locale dell’applicazione. "
+            "Usa questa funzione solo in conformità alla normativa sulla privacy (es. GDPR)."
+        )
+        save_prompt = st.radio(
+            "Vuoi salvare questo SkinID™ con nome, cognome, email e telefono?",
+            ["No", "Sì"],
+            horizontal=True,
+            key="save_skin_prompt",
+        )
+        if save_prompt == "Sì":
+            with st.form("save_client_skin_form", clear_on_submit=False):
+                sr1, sr2 = st.columns(2)
+                fn = sr1.text_input("Nome *")
+                ln = sr2.text_input("Cognome *")
+                em = st.text_input("Email *")
+                ph = st.text_input("Telefono *")
+                do_save = st.form_submit_button("Salva nel database", type="primary")
+            if do_save:
+                if not (fn or "").strip() or not (ln or "").strip() or not (em or "").strip() or not (ph or "").strip():
+                    st.error("Compila tutti i campi obbligatori.")
+                elif "@" not in (em or ""):
+                    st.error("Inserisci un indirizzo email valido.")
+                else:
+                    db_sv = get_session()
+                    try:
+                        row = SavedClientSkin(
+                            first_name=fn.strip(),
+                            last_name=ln.strip(),
+                            email=em.strip().lower(),
+                            phone=ph.strip(),
+                            zones_json=json.loads(json.dumps(zones)),
+                            skin_type=s_type,
+                            source=s_source,
+                            skin_id_code=skin_id,
+                        )
+                        db_sv.add(row)
+                        db_sv.flush()
+                        new_sid = row.saved_id
+                        db_sv.commit()
+                        st.session_state.skin_data["saved_client_id"] = new_sid
+                        st.success(
+                            f"Profilo salvato per **{fn.strip()} {ln.strip()}**. "
+                            "Puoi richiamarlo da **Matching Prodotti** → SkinID salvati. "
+                            "I risultati **TROVA MATCH** saranno collegati a questo cliente."
+                        )
+                    except Exception as e:
+                        db_sv.rollback()
+                        st.error(f"Errore durante il salvataggio: {e}")
+                    finally:
+                        db_sv.close()
+        else:
+            st.info(
+                "Puoi andare su **Matching Prodotti** con il profilo attuale in sessione "
+                "(nessun salvataggio anagrafico)."
+            )
+
+        col_ok, col_reset = st.columns([3, 1])
+        col_ok.success(
+            "SkinID™ pronto — apri **Matching Prodotti** per cercare i fondotinta. "
+            "Per richiamare questo profilo in un secondo momento, salvalo qui sopra."
+        )
         if col_reset.button("🔄 Nuova analisi"):
             st.session_state.skin_data = None
             st.session_state.uploaded_files_bytes = {}
@@ -425,8 +502,73 @@ if nav == "🔬 Analisi Pelle":
 elif nav == "🎯 Matching Prodotti":
     st.title("🎯 Matching Prodotti")
 
+    db_list = get_session()
+    try:
+        saved_catalog = list_saved_client_skins(db_list)
+    finally:
+        db_list.close()
+
+    with st.expander(
+        "📂 SkinID™ salvati — richiama un profilo",
+        expanded=not bool(st.session_state.skin_data),
+    ):
+        if not saved_catalog:
+            st.caption(
+                "Nessun profilo salvato. Dopo **Analisi Pelle**, scegli «Sì» al salvataggio "
+                "e compila nome, cognome, email e telefono."
+            )
+        else:
+            st.caption(f"{len(saved_catalog)} profilo/i nel database.")
+            for rec in saved_catalog:
+                ca, cb, cd = st.columns([4, 1, 1])
+                created = rec.created_at.strftime("%d/%m/%Y %H:%M") if rec.created_at else "—"
+                ca.markdown(
+                    f"**{rec.first_name} {rec.last_name}** · {rec.email} · {rec.phone}  \n"
+                    f"`{rec.skin_id_code}` · {created} · {rec.source}"
+                )
+                if cb.button("Carica", key=f"match_load_{rec.saved_id}", type="primary"):
+                    st.session_state.skin_data = skin_data_from_saved_row(rec)
+                    st.rerun()
+                if cd.button("Elimina", key=f"match_del_{rec.saved_id}"):
+                    dbd = get_session()
+                    try:
+                        dbd.query(SkinProfile).filter(
+                            SkinProfile.saved_client_skin_id == rec.saved_id
+                        ).update(
+                            {SkinProfile.saved_client_skin_id: None},
+                            synchronize_session=False,
+                        )
+                        ent = dbd.query(SavedClientSkin).filter(
+                            SavedClientSkin.saved_id == rec.saved_id
+                        ).first()
+                        if ent:
+                            dbd.delete(ent)
+                        dbd.commit()
+                    finally:
+                        dbd.close()
+                    cur = st.session_state.get("skin_data")
+                    if cur and cur.get("saved_client_id") == rec.saved_id:
+                        cur.pop("saved_client_id", None)
+                    st.rerun()
+            st.caption("**Elimina** rimuove l’anagrafica e lo SkinID salvato; i match già registrati restano storici senza collegamento al cliente.")
+            rows_preview = [
+                {
+                    "Data": rec.created_at.strftime("%Y-%m-%d %H:%M") if rec.created_at else "",
+                    "Nome": rec.first_name,
+                    "Cognome": rec.last_name,
+                    "Email": rec.email,
+                    "Telefono": rec.phone,
+                    "SkinID™": rec.skin_id_code,
+                }
+                for rec in saved_catalog
+            ]
+            st.dataframe(rows_preview, use_container_width=True, hide_index=True)
+
     if not st.session_state.skin_data:
-        st.warning("Esegui prima l'analisi pelle nella sezione **Analisi Pelle**.")
+        st.warning(
+            "Nessun profilo pelle attivo. Carica uno **SkinID salvato** sopra oppure esegui "
+            "l’analisi nella sezione **Analisi Pelle**."
+        )
         st.stop()
 
     sd        = st.session_state.skin_data
@@ -447,6 +589,11 @@ elif nav == "🎯 Matching Prodotti":
     with st.expander("SkinID™ attivo", expanded=True):
         mostra_skinid_header(skin_id, avg_ita, categoria, undertone,
                              avg_L, ri_data, s_type, sd["source"])
+        if sd.get("saved_client_id"):
+            st.caption(
+                "Profilo collegato a un **cliente salvato**: ogni ricerca **TROVA MATCH** "
+                "memorizza i match nel database assieme a questo riferimento anagrafico."
+            )
 
     st.divider()
 
@@ -493,7 +640,8 @@ elif nav == "🎯 Matching Prodotti":
                 b_weighted=round(avg_b,2), ITA_deg=avg_ita,
                 category=categoria, undertone=undertone,
                 skin_type=s_type, reactivity_index=ri_data["livello"],
-                skin_id_code=skin_id, source=sd["source"]
+                skin_id_code=skin_id, source=sd["source"],
+                saved_client_skin_id=sd.get("saved_client_id"),
             )
             db2.add(profile)
             db2.flush()

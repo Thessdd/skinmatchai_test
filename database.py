@@ -6,9 +6,10 @@ SQLAlchemy ORM, migrabile su PostgreSQL senza modifiche al codice.
 import math
 import uuid
 from datetime import date
+from typing import Optional
 from sqlalchemy import (
     create_engine, Column, String, Float, Boolean, Integer,
-    Date, DateTime, Enum, ForeignKey, JSON, func
+    Date, DateTime, Enum, ForeignKey, JSON, func, inspect, text,
 )
 from sqlalchemy.orm import declarative_base, relationship, Session
 import enum as pyenum
@@ -125,10 +126,16 @@ class SkinProfile(Base):
     reactivity_index = Column(String)   # BASSO / MEDIO / ALTO
     skin_id_code     = Column(String)
     source           = Column(String)   # photo / nix_manual / nix_bluetooth
+    saved_client_skin_id = Column(
+        String,
+        ForeignKey("saved_client_skins.saved_id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at       = Column(DateTime, default=func.now())
 
     matches = relationship("Match", back_populates="profile",
                            cascade="all, delete-orphan")
+    saved_client = relationship("SavedClientSkin", back_populates="linked_match_profiles")
 
 
 class Match(Base):
@@ -146,6 +153,26 @@ class Match(Base):
 
     profile = relationship("SkinProfile", back_populates="matches")
     product = relationship("Product",     back_populates="matches")
+
+
+class SavedClientSkin(Base):
+    """Profilo SkinID™ salvato con anagrafica cliente (analisi o import da sessione)."""
+    __tablename__ = "saved_client_skins"
+
+    saved_id       = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    first_name     = Column(String, nullable=False)
+    last_name      = Column(String, nullable=False)
+    email          = Column(String, nullable=False)
+    phone          = Column(String, nullable=False)
+    zones_json     = Column(JSON, nullable=False)   # stessa struttura di skin_data["zones"]
+    skin_type      = Column(String, nullable=False)
+    source         = Column(String, nullable=False)
+    skin_id_code   = Column(String, nullable=False)   # SkinID™ testuale al momento del salvataggio
+    created_at     = Column(DateTime, default=func.now())
+
+    linked_match_profiles = relationship(
+        "SkinProfile", back_populates="saved_client",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -303,6 +330,44 @@ def find_matches(db: Session, skin: dict, skin_ri: str,
 def init_db():
     """Crea le tabelle se non esistono."""
     Base.metadata.create_all(ENGINE)
+    migrate_schema()
+
+
+def migrate_schema():
+    """Aggiunge colonne assenti su database già creati (es. upgrade locale)."""
+    try:
+        insp = inspect(ENGINE)
+        tables = insp.get_table_names()
+    except Exception:
+        return
+    if "skin_profiles" not in tables:
+        return
+    cols = {c["name"] for c in insp.get_columns("skin_profiles")}
+    if "saved_client_skin_id" in cols:
+        return
+    dialect = ENGINE.dialect.name
+    with ENGINE.begin() as conn:
+        if dialect == "postgresql":
+            conn.execute(
+                text("ALTER TABLE skin_profiles ADD COLUMN IF NOT EXISTS saved_client_skin_id VARCHAR")
+            )
+        else:
+            conn.execute(
+                text("ALTER TABLE skin_profiles ADD COLUMN saved_client_skin_id VARCHAR")
+            )
+
+
+def list_saved_client_skins(db: Session):
+    """Elenco profili cliente salvati, dal più recente."""
+    return (
+        db.query(SavedClientSkin)
+        .order_by(SavedClientSkin.created_at.desc())
+        .all()
+    )
+
+
+def get_saved_client_skin(db: Session, saved_id: str) -> Optional[SavedClientSkin]:
+    return db.query(SavedClientSkin).filter(SavedClientSkin.saved_id == saved_id).first()
 
 
 def seed_demo_data(db: Session):
