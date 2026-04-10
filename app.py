@@ -136,6 +136,24 @@ BADGE_COLOR = {
     "✗ Non consigliato": "error",
 }
 
+def pdf_to_bytes(pdf_obj) -> bytes:
+    """
+    Compat layer for fpdf (PyFPDF) and fpdf2.
+
+    - fpdf2: output(dest="S") returns bytes/bytearray
+    - pypdf/fpdf: output(dest="S") may return str (latin-1)
+    """
+    try:
+        out = pdf_obj.output(dest="S")
+    except TypeError:
+        out = pdf_obj.output()
+
+    if isinstance(out, (bytes, bytearray)):
+        return bytes(out)
+    if isinstance(out, str):
+        return out.encode("latin-1", errors="ignore")
+    return bytes(out)
+
 def _clamp01(x: float) -> float:
     return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
 
@@ -1023,36 +1041,44 @@ elif nav == "🎯 Matching Prodotti":
         if PDF_AVAILABLE and results:
             st.divider()
             if st.button("📄 Scarica report PDF", key="btn_pdf"):
-                pdf = FPDF()
-                pdf.add_page()
-                pdf.set_font("Helvetica", "B", 16)
-                pdf.cell(0, 10, "SkinMatch AI — Report Analisi Pelle", ln=True)
-                pdf.set_font("Helvetica", "", 11)
-                pdf.cell(0, 8, f"SkinID: {skin_id}", ln=True)
-                pdf.cell(0, 8, f"Categoria ITA: {categoria}  |  Undertone: {undertone}  |  ITA: {avg_ita:.1f}", ln=True)
-                pdf.cell(0, 8, f"Reactivity Index: {ri_data['livello']}  |  Sorgente: {sd['source']}", ln=True)
-                pdf.ln(4)
-                pdf.set_font("Helvetica", "B", 12)
-                pdf.cell(0, 8, "Top Match Fondotinta", ln=True)
-                pdf.set_font("Helvetica", "", 10)
-                for i, m in enumerate(results[:5], 1):
-                    p = m["product"]
-                    pdf.cell(0, 7,
-                        f"{i}. {p.brand} — {p.name}  |  Score: {m['score']:.3f}  |  DE: {m['delta_e']:.2f}  |  {m['badge']}",
-                        ln=True)
-                pdf.ln(4)
-                pdf.set_font("Helvetica", "I", 8)
-                pdf.cell(0, 6, "Generato da SkinMatch AI — skinmatch.ai", ln=True)
-                pdf_bytes = bytes(pdf.output())
-                st.download_button(
-                    label="⬇ Download PDF",
-                    data=pdf_bytes,
-                    file_name=f"SkinMatch_{skin_id}.pdf",
-                    mime="application/pdf",
-                    key="dl_pdf"
-                )
+                try:
+                    pdf = FPDF()
+                    pdf.add_page()
+                    pdf.set_font("Helvetica", "B", 16)
+                    pdf.cell(0, 10, "SkinMatch AI — Report Analisi Pelle", ln=True)
+                    pdf.set_font("Helvetica", "", 11)
+                    pdf.cell(0, 8, f"SkinID: {skin_id}", ln=True)
+                    pdf.cell(0, 8, f"Categoria ITA: {categoria}  |  Undertone: {undertone}  |  ITA: {avg_ita:.1f}", ln=True)
+                    pdf.cell(0, 8, f"Reactivity Index: {ri_data['livello']}  |  Sorgente: {sd['source']}", ln=True)
+                    pdf.ln(4)
+                    pdf.set_font("Helvetica", "B", 12)
+                    pdf.cell(0, 8, "Top Match Fondotinta", ln=True)
+                    pdf.set_font("Helvetica", "", 10)
+                    for i, m in enumerate(results[:5], 1):
+                        p = m["product"]
+                        pdf.cell(
+                            0,
+                            7,
+                            f"{i}. {p.brand} — {p.name}  |  Score: {m['score']:.3f}  |  DE: {m['delta_e']:.2f}  |  {m['badge']}",
+                            ln=True,
+                        )
+                    pdf.ln(4)
+                    pdf.set_font("Helvetica", "I", 8)
+                    pdf.cell(0, 6, "Generato da SkinMatch AI — skinmatch.ai", ln=True)
+
+                    pdf_bytes = pdf_to_bytes(pdf)
+                    st.download_button(
+                        label="⬇ Download PDF",
+                        data=pdf_bytes,
+                        file_name=f"SkinMatch_{skin_id}.pdf",
+                        mime="application/pdf",
+                        key="dl_pdf"
+                    )
+                except Exception as e:
+                    st.error(f"Errore durante la generazione del PDF: {e}")
         elif not PDF_AVAILABLE:
-            st.caption("_Per abilitare l'export PDF aggiungi `fpdf2` a requirements.txt_")
+            st.warning("Export PDF non disponibile: installa `fpdf2` (o `fpdf`).")
+            st.code("pip install fpdf2", language="bash")
 
         # Salva su DB
         db2 = get_session()
