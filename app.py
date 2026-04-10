@@ -86,7 +86,7 @@ class SkinIDEngine:
                             [0.2126729,0.7151522,0.0721750],
                             [0.0193339,0.1191920,0.9503041]])
     WHITE_D65  = np.array([95.047, 100.0, 108.883])
-    ZONE_WEIGHTS = {"Mandibola": 0.50, "Guancia": 0.35, "Fronte": 0.15}
+    ZONE_WEIGHTS = {"Collo": 0.50, "Guancia": 0.35, "Fronte": 0.15}
 
     def srgb_to_lab(self, rgb):
         r = np.asarray(rgb, dtype=float)/255.0
@@ -136,6 +136,86 @@ BADGE_COLOR = {
     "✗ Non consigliato": "error",
 }
 
+def _clamp01(x: float) -> float:
+    return 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+
+def lab_to_srgb(L: float, a: float, b: float) -> tuple[int, int, int]:
+    """
+    CIE Lab (D65/2°) -> sRGB 8-bit (clamped).
+    """
+    fy = (L + 16.0) / 116.0
+    fx = fy + (a / 500.0)
+    fz = fy - (b / 200.0)
+
+    def f_inv(t: float) -> float:
+        t3 = t ** 3
+        return t3 if t3 > 0.008856 else (t - 16.0 / 116.0) / 7.787
+
+    xr = f_inv(fx)
+    yr = f_inv(fy)
+    zr = f_inv(fz)
+
+    Xn, Yn, Zn = SkinIDEngine.WHITE_D65 / 100.0
+    X = xr * Xn
+    Y = yr * Yn
+    Z = zr * Zn
+
+    # XYZ -> linear RGB (sRGB D65)
+    r_lin =  3.2404542 * X + (-1.5371385) * Y + (-0.4985314) * Z
+    g_lin = (-0.9692660) * X +  1.8760108 * Y +  0.0415560 * Z
+    b_lin =  0.0556434 * X + (-0.2040259) * Y +  1.0572252 * Z
+
+    def gamma(u: float) -> float:
+        u = _clamp01(u)
+        return 12.92 * u if u <= 0.0031308 else 1.055 * (u ** (1.0 / 2.4)) - 0.055
+
+    r = int(round(gamma(r_lin) * 255.0))
+    g = int(round(gamma(g_lin) * 255.0))
+    bb = int(round(gamma(b_lin) * 255.0))
+    r = 0 if r < 0 else 255 if r > 255 else r
+    g = 0 if g < 0 else 255 if g > 255 else g
+    bb = 0 if bb < 0 else 255 if bb > 255 else bb
+    return r, g, bb
+
+def lab_to_hex(L: float, a: float, b: float) -> str:
+    r, g, bb = lab_to_srgb(L, a, b)
+    return f"#{r:02x}{g:02x}{bb:02x}"
+
+def render_color_swatch(hex_color: str, size_px: int = 22, shape: str = "circle") -> str:
+    radius = "999px" if shape == "circle" else "6px"
+    return (
+        f"<div style='width:{size_px}px;height:{size_px}px;"
+        f"border-radius:{radius};background:{hex_color};"
+        f"border:1px solid rgba(255,255,255,0.35);"
+        f"box-shadow:0 0 0 1px rgba(0,0,0,0.12) inset;"
+        f"display:inline-block;vertical-align:middle'></div>"
+    )
+
+def render_palette(zones: dict, weights: dict) -> None:
+    items = []
+    for z in ["Fronte", "Guancia", "Collo"]:
+        if z not in zones:
+            continue
+        v = zones[z]
+        hx = lab_to_hex(float(v["L*"]), float(v["a*"]), float(v["b*"]))
+        items.append((z, hx))
+
+    tw = sum(weights.get(z, 0.0) for z in zones)
+    if tw <= 0:
+        return
+    avg_L = sum(float(zones[z]["L*"]) * weights.get(z, 0.0) for z in zones) / tw
+    avg_a = sum(float(zones[z]["a*"]) * weights.get(z, 0.0) for z in zones) / tw
+    avg_b = sum(float(zones[z]["b*"]) * weights.get(z, 0.0) for z in zones) / tw
+    avg_hex = lab_to_hex(avg_L, avg_a, avg_b)
+
+    st.subheader("Palette visiva (zone + media pesata)")
+    cols = st.columns(len(items) + 1)
+    for i, (label, hx) in enumerate(items):
+        cols[i].markdown(render_color_swatch(hx, size_px=56, shape="circle"), unsafe_allow_html=True)
+        cols[i].caption(f"**{label}**  \n`{hx}`")
+    cols[len(items)].markdown(render_color_swatch(avg_hex, size_px=56, shape="circle"), unsafe_allow_html=True)
+    cols[len(items)].caption("**Media pesata**  \n" + f"`{avg_hex}`")
+
 def show_match_results(matches: list):
     if not matches:
         st.info("Nessun prodotto trovato con i filtri selezionati.")
@@ -149,13 +229,15 @@ def show_match_results(matches: list):
         bc = BADGE_COLOR.get(m["badge"], "info")
 
         with st.container():
-            cols = st.columns([0.5, 3, 1.5, 1.5, 1.5])
+            sw_hex = lab_to_hex(float(c.L_star), float(c.a_star), float(c.b_star))
+            cols = st.columns([0.45, 0.6, 3, 1.2, 1.2, 1.4])
             cols[0].markdown(f"**#{i+1}**")
-            cols[1].markdown(f"**{p.brand}**  \n{p.line} · *{p.name}*  \n"
+            cols[1].markdown(render_color_swatch(sw_hex, size_px=24, shape="square"), unsafe_allow_html=True)
+            cols[2].markdown(f"**{p.brand}**  \n{p.line} · *{p.name}*  \n"
                              f"`{p.finish}` · `{p.coverage}` · €{p.price_eur or '—'}")
-            cols[2].metric("Score", f"{m['score']:.3f}")
-            cols[3].metric("ΔE", f"{m['delta_e']:.2f}")
-            getattr(cols[4], bc)(m["badge"])
+            cols[3].metric("Score", f"{m['score']:.3f}")
+            cols[4].metric("ΔE", f"{m['delta_e']:.2f}")
+            getattr(cols[5], bc)(m["badge"])
 
             with st.expander("Dettaglio colorimetrico"):
                 d1, d2, d3 = st.columns(3)
@@ -210,7 +292,8 @@ st.set_page_config(page_title="SkinMatch AI", page_icon="🧬", layout="wide")
 # Session state
 for k,v in [("engine",SkinIDEngine()),("calibrator",ColorCheckerCalibrator()),
             ("calib_result",None),("skin_data",None),
-            ("uploaded_files_bytes",{}),("zone_map",{}),("show_result",False)]:
+            ("uploaded_files_bytes",{}),("zone_map",{}),("show_result",False),
+            ("flow_step", 1), ("admin_page", "flow"), ("last_match_results", None)]:
     if k not in st.session_state: st.session_state[k] = v
 
 engine     = st.session_state.engine
@@ -222,12 +305,31 @@ with st.sidebar:
     st.header("Parametri globali")
     skin_type = st.radio("Tipo di pelle", ["Oleosa","Mista","Secca / Normale"], index=1)
     st.divider()
-    nav = st.radio("Navigazione", [
-        "🔬 Analisi Pelle",
-        "🎯 Matching Prodotti",
-        "📦 Database Prodotti",
-        "➕ Aggiungi Prodotto",
-    ])
+
+    st.markdown("**Onboarding**")
+    st.caption("Step 1 Carica → Step 2 Zone → Step 3 Risultato → Step 4 Match")
+    c1, c2 = st.columns(2)
+    if c1.button("Vai al flow", use_container_width=True):
+        st.session_state.admin_page = "flow"
+        st.rerun()
+    if c2.button("Riparti", use_container_width=True):
+        st.session_state.flow_step = 1
+        st.session_state.skin_data = None
+        st.session_state.uploaded_files_bytes = {}
+        st.session_state.zone_map = {}
+        st.session_state.last_match_results = None
+        st.session_state.admin_page = "flow"
+        st.rerun()
+
+    with st.expander("⚙️ Gestione (admin)", expanded=False):
+        a1, a2 = st.columns(2)
+        if a1.button("Database", use_container_width=True):
+            st.session_state.admin_page = "db"
+            st.rerun()
+        if a2.button("Aggiungi", use_container_width=True):
+            st.session_state.admin_page = "add"
+            st.rerun()
+
     st.divider()
 
     if st.button("▶ Avvia demo", help="Carica un profilo pelle sintetico per esplorare l'app senza foto"):
@@ -242,9 +344,40 @@ with st.sidebar:
         }
         st.session_state.uploaded_files_bytes = {}
         st.session_state.zone_map = {}
+        st.session_state.flow_step = 3
+        st.session_state.admin_page = "flow"
         st.rerun()
 
     st.caption("CIE 15:2004 · Del Bino et al. (2006)")
+
+
+def show_flow_header(step: int) -> None:
+    steps = ["Carica foto", "Seleziona zone", "Risultato", "Trova match"]
+    total = len(steps)
+    step = 1 if step < 1 else total if step > total else step
+    progress = 0.0 if total <= 1 else (step - 1) / (total - 1)
+    st.progress(progress)
+    st.caption(
+        " → ".join(
+            [
+                f"**Step {i+1}** {name}" if (i + 1) == step else f"Step {i+1} {name}"
+                for i, name in enumerate(steps)
+            ]
+        )
+    )
+
+
+# Router (flow vs admin pages)
+admin_page = st.session_state.get("admin_page", "flow")
+flow_step = int(st.session_state.get("flow_step", 1))
+
+if admin_page == "db":
+    nav = "📦 Database Prodotti"
+elif admin_page == "add":
+    nav = "➕ Aggiungi Prodotto"
+else:
+    nav = "🎯 Matching Prodotti" if flow_step >= 4 else "🔬 Analisi Pelle"
+    show_flow_header(flow_step)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -331,8 +464,21 @@ if nav == "🔬 Analisi Pelle":
             if "zone_map" not in st.session_state:
                 st.session_state.zone_map = {}
 
+            if flow_step <= 1:
+                st.subheader("Step 1 — Foto caricate")
+                st.caption("Quando sei pronto, passa allo Step 2 per assegnare le zone e vedere il colore live.")
+                cols_prev = st.columns(3)
+                for i, fname in enumerate(names):
+                    with cols_prev[i]:
+                        st.image(_io.BytesIO(saved[fname]), use_container_width=True)
+                if st.button("Continua → Step 2 (seleziona zone)", type="primary"):
+                    st.session_state.flow_step = 2
+                    st.rerun()
+                st.stop()
+
+            st.subheader("Step 2 — Seleziona zone (preview colore live)")
             cols = st.columns(3)
-            opz  = ["Seleziona...","Fronte","Guancia","Mandibola"]
+            opz  = ["Seleziona...","Fronte","Guancia","Collo"]
             for i, fname in enumerate(names):
                 with cols[i]:
                         st.image(_io.BytesIO(saved[fname]), use_container_width=True)
@@ -341,12 +487,35 @@ if nav == "🔬 Analisi Pelle":
                         idx  = opz.index(prev) if prev in opz else 0
                         sel  = st.selectbox(f"Zona {i+1}", opz, index=idx, key=f"z{i}")
                         st.session_state.zone_map[fname] = sel
+                        if sel != "Seleziona...":
+                            try:
+                                pil_img_prev = Image.open(_io.BytesIO(saved[fname])).convert("RGB")
+                                img_prev = np.array(pil_img_prev)
+                                del pil_img_prev
+                                h_prev, w_prev = img_prev.shape[:2]
+                                roi_coords_prev = {
+                                    "Fronte":  (int(h_prev*.15), int(h_prev*.40), int(w_prev*.30), int(w_prev*.70)),
+                                    "Guancia": (int(h_prev*.35), int(h_prev*.65), int(w_prev*.20), int(w_prev*.80)),
+                                    "Collo":   (int(h_prev*.65), int(h_prev*.90), int(w_prev*.25), int(w_prev*.75)),
+                                }
+                                y1,y2,x1,x2 = roi_coords_prev.get(sel,(int(h_prev*.35),int(h_prev*.65),int(w_prev*.35),int(w_prev*.65)))
+                                roi_prev = img_prev[y1:y2, x1:x2]
+                                if roi_prev.size == 0:
+                                    roi_prev = img_prev[int(h_prev*.35):int(h_prev*.65), int(w_prev*.35):int(w_prev*.65)]
+                                rgb_prev = np.median(roi_prev.reshape(-1, 3), axis=0)
+                                Lp, ap, bp = engine.srgb_to_lab(rgb_prev)
+                                Lp, ap, bp = calibrator.apply(Lp, ap, bp)
+                                hx = lab_to_hex(float(Lp), float(ap), float(bp))
+                                st.markdown(render_color_swatch(hx, size_px=22, shape="circle"), unsafe_allow_html=True)
+                                st.caption(f"Skin tone preview live: `{hx}`")
+                            except Exception:
+                                pass
 
             zone_map  = st.session_state.zone_map
             zone_vals = [v for v in zone_map.values() if v != "Seleziona..."]
 
             if len(set(zone_vals)) < 3:
-                st.warning("Seleziona 3 zone distinte (Fronte, Guancia, Mandibola).")
+                st.warning("Seleziona 3 zone distinte (Fronte, Guancia, Collo).")
             else:
                 st.success("Configurazione valida — pronto per l'analisi.")
                 # Form + submit: st.button qui dentro non è affidabile al 2° click (widget annidati).
@@ -357,7 +526,7 @@ if nav == "🔬 Analisi Pelle":
                     zm = dict(st.session_state.zone_map)
                     zv = [v for v in zm.values() if v != "Seleziona..."]
                     if len(set(zv)) < 3:
-                        st.error("Seleziona 3 zone distinte (Fronte, Guancia, Mandibola) prima di analizzare.")
+                        st.error("Seleziona 3 zone distinte (Fronte, Guancia, Collo) prima di analizzare.")
                     else:
                         res = {}
                         with st.spinner("Elaborazione..."):
@@ -377,7 +546,7 @@ if nav == "🔬 Analisi Pelle":
                                     roi_coords = {
                                         "Fronte":    (int(h*.15),int(h*.40),int(w_img*.30),int(w_img*.70)),
                                         "Guancia":   (int(h*.35),int(h*.65),int(w_img*.20),int(w_img*.80)),
-                                        "Mandibola": (int(h*.65),int(h*.90),int(w_img*.25),int(w_img*.75)),
+                                        "Collo": (int(h*.65),int(h*.90),int(w_img*.25),int(w_img*.75)),
                                     }
                                     y1,y2,x1,x2 = roi_coords.get(zona,(int(h*.35),int(h*.65),int(w_img*.35),int(w_img*.65)))
                                     roi       = img_array[y1:y2,x1:x2]
@@ -401,22 +570,25 @@ if nav == "🔬 Analisi Pelle":
                                 "skin_type": skin_type,
                                 "source":    "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato"),
                             }
+                            st.session_state.flow_step = 3
                             st.rerun()
 
     # ── Nix manuale ───────────────────────────────────────────────────────────
     else:
         st.info("Usa illuminante **D65** e osservatore **2°** nell'app Nix.")
-        ZONE_LIST = ["Fronte","Guancia","Mandibola"]
-        PESI = {"Fronte":"15%","Guancia":"35%","Mandibola":"50%"}
+        ZONE_LIST = ["Fronte","Guancia","Collo"]
+        PESI = {"Fronte":"15%","Guancia":"35%","Collo":"50%"}
         res  = {}
         for z in ZONE_LIST:
             with st.expander(f"📍 {z} · peso {PESI[z]}", expanded=True):
-                c1,c2,c3 = st.columns(3)
+                c1,c2,c3,c4 = st.columns([1,1,1,0.6])
                 L = c1.number_input(f"L* {z}", 0.0, 100.0, 60.0, 0.01, key=f"L{z}")
                 a = c2.number_input(f"a* {z}",-50.0, 50.0, 10.0, 0.01, key=f"a{z}")
                 b = c3.number_input(f"b* {z}",-50.0, 50.0, 18.0, 0.01, key=f"b{z}")
                 ita = round(math.atan2(L-50, b if abs(b)>0.001 else 0.001)*(180/math.pi),1)
-                st.caption(f"ITA° live: **{ita}°** → {engine.get_ita_category(ita)}")
+                hx = lab_to_hex(float(L), float(a), float(b))
+                c4.markdown(render_color_swatch(hx, size_px=22, shape="circle"), unsafe_allow_html=True)
+                st.caption(f"ITA° live: **{ita}°** → {engine.get_ita_category(ita)} · Hex: `{hx}`")
                 res[z] = {"L*":L,"a*":a,"b*":b}
 
         recap = st.columns(3)
@@ -435,6 +607,8 @@ if nav == "🔬 Analisi Pelle":
                 "skin_type": skin_type,
                 "source": "Nix Spectro L · D65/2° · manuale",
             }
+            st.session_state.flow_step = 3
+            st.rerun()
 
     # ── Risultato analisi ─────────────────────────────────────────────────────
     if st.session_state.skin_data:
@@ -456,6 +630,8 @@ if nav == "🔬 Analisi Pelle":
         st.divider()
         mostra_skinid_header(skin_id, avg_ita, categoria, undertone,
                              avg_L, ri_data, s_type, s_source)
+
+        render_palette(zones, w)
 
         st.subheader("Dettaglio per zona")
         st.table({z: {"L*":v["L*"],"a*":v["a*"],"b*":v["b*"],
@@ -524,15 +700,19 @@ if nav == "🔬 Analisi Pelle":
                 "(nessun salvataggio anagrafico)."
             )
 
-        col_ok, col_reset = st.columns([3, 1])
+        col_ok, col_mid, col_reset = st.columns([2.2, 1.2, 1])
         col_ok.success(
-            "SkinID™ pronto — apri **Matching Prodotti** per cercare i fondotinta. "
+            "SkinID™ pronto — passa allo **Step 4** per trovare i match. "
             "Per richiamare questo profilo in un secondo momento, salvalo qui sopra."
         )
+        if col_mid.button("Step 4 →", type="primary"):
+            st.session_state.flow_step = 4
+            st.rerun()
         if col_reset.button("🔄 Nuova analisi"):
             st.session_state.skin_data = None
             st.session_state.uploaded_files_bytes = {}
             st.session_state.zone_map = {}
+            st.session_state.flow_step = 1
             # Reset anche del radio salvataggio cliente
             for k in ["save_skin_prompt", "client_save_fn", "client_save_ln",
                       "client_save_em", "client_save_ph"]:
@@ -635,6 +815,7 @@ elif nav == "🎯 Matching Prodotti":
     with st.expander("SkinID™ attivo", expanded=True):
         mostra_skinid_header(skin_id, avg_ita, categoria, undertone,
                              avg_L, ri_data, s_type, sd["source"])
+        render_palette(zones, w)
         if sd.get("saved_client_id"):
             st.caption(
                 "Profilo collegato a un **cliente salvato**: ogni ricerca **TROVA MATCH** "
