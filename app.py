@@ -228,7 +228,7 @@ def show_match_results(matches: list):
         c  = m["colorimetry"]
         bc = BADGE_COLOR.get(m["badge"], "info")
 
-        with st.container():
+        with st.container(border=True):
             sw_hex = lab_to_hex(float(c.L_star), float(c.a_star), float(c.b_star))
             cols = st.columns([0.45, 0.6, 3, 1.2, 1.2, 1.4])
             cols[0].markdown(f"**#{i+1}**")
@@ -289,6 +289,108 @@ def skin_data_from_saved_row(row: SavedClientSkin) -> dict:
 
 st.set_page_config(page_title="SkinMatch AI", page_icon="🧬", layout="wide")
 
+# Global CSS (beauty-tech theme)
+st.markdown(
+    """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root{
+  --sm-bg: #FAF7F2;         /* crema */
+  --sm-surface: #FFFFFF;
+  --sm-beige: #F5E6D3;      /* beige caldo */
+  --sm-terracotta: #C4845A; /* terracotta */
+  --sm-text: #2C2C2C;       /* antracite */
+  --sm-muted: rgba(44,44,44,0.72);
+  --sm-border: rgba(44,44,44,0.10);
+  --sm-shadow: 0 10px 30px rgba(44,44,44,0.10);
+}
+
+html, body, [class*="css"]  { font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: var(--sm-text); }
+.stApp { background: var(--sm-bg); }
+
+h1, h2, h3, h4, h5 { font-family: 'Cormorant Garamond', Georgia, serif; letter-spacing: 0.2px; }
+h1 { font-weight: 700; }
+h2, h3 { font-weight: 600; }
+
+/* Header */
+.sm-header{
+  background: linear-gradient(90deg, var(--sm-beige), rgba(250,247,242,0.0));
+  border: 1px solid var(--sm-border);
+  border-radius: 18px;
+  padding: 18px 18px 14px 18px;
+  box-shadow: var(--sm-shadow);
+  margin: 6px 0 18px 0;
+}
+.sm-header__top{
+  display:flex;
+  gap:12px;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.sm-brand{
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1.05;
+  margin: 0;
+}
+.sm-claim{
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--sm-muted);
+  margin-top: 6px;
+}
+.sm-pill{
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--sm-text);
+  background: rgba(245,230,211,0.65);
+  border: 1px solid var(--sm-border);
+  border-radius: 999px;
+  padding: 6px 10px;
+}
+
+/* Buttons */
+.stButton>button, .stDownloadButton>button{
+  border-radius: 12px !important;
+  border: 1px solid var(--sm-border) !important;
+}
+.stButton>button[kind="primary"], .stButton>button[data-testid="baseButton-primary"]{
+  background: var(--sm-terracotta) !important;
+  border-color: rgba(196,132,90,0.55) !important;
+}
+
+/* Cards: use Streamlit bordered containers as ecommerce cards */
+div[data-testid="stVerticalBlockBorderWrapper"]{
+  background: var(--sm-surface);
+  border: 1px solid var(--sm-border) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 10px 24px rgba(44,44,44,0.08);
+}
+div[data-testid="stVerticalBlockBorderWrapper"] > div{
+  padding: 14px 14px 10px 14px;
+}
+
+/* Metrics */
+div[data-testid="stMetric"]{
+  background: rgba(250,247,242,0.65);
+  border: 1px solid var(--sm-border);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+/* Sidebar cleanup */
+section[data-testid="stSidebar"]{
+  background: #fff;
+  border-right: 1px solid var(--sm-border);
+}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
 # Session state
 for k,v in [("engine",SkinIDEngine()),("calibrator",ColorCheckerCalibrator()),
             ("calib_result",None),("skin_data",None),
@@ -299,9 +401,24 @@ for k,v in [("engine",SkinIDEngine()),("calibrator",ColorCheckerCalibrator()),
 engine     = st.session_state.engine
 calibrator = st.session_state.calibrator
 
+# Top header (investor-first)
+st.markdown(
+    """
+<div class="sm-header">
+  <div class="sm-header__top">
+    <div>
+      <div class="sm-brand">SkinMatch AI</div>
+      <div class="sm-claim">Beauty-tech colorimetry: SkinID™ in Lab → match immediato con gli shade.</div>
+    </div>
+    <div class="sm-pill">D65/2° · CIE Lab · ΔE</div>
+  </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.image("https://via.placeholder.com/200x60?text=SkinMatch+AI", use_container_width=True)
     st.header("Parametri globali")
     skin_type = st.radio("Tipo di pelle", ["Oleosa","Mista","Secca / Normale"], index=1)
     st.divider()
