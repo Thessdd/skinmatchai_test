@@ -5,3 +5,4 @@ pillow-heif
 sqlalchemy
 pandas
 psycopg2-binary
+fpdf2

@@ -12,6 +12,12 @@ from PIL import Image
 import pillow_heif
 import io as _io
 import re
+import uuid as _uuid
+try:
+    from fpdf import FPDF
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
 from database import (
     init_db, seed_demo_data, get_session,
     Product, ProductColorimetry, SkinProfile, Match, SavedClientSkin,
@@ -223,6 +229,21 @@ with st.sidebar:
         "➕ Aggiungi Prodotto",
     ])
     st.divider()
+
+    if st.button("▶ Avvia demo", help="Carica un profilo pelle sintetico per esplorare l'app senza foto"):
+        st.session_state.skin_data = {
+            "zones": {
+                "Fronte":    {"L*": 72.4, "a*": 7.8,  "b*": 16.2},
+                "Guancia":   {"L*": 68.1, "a*": 9.2,  "b*": 18.9},
+                "Collo":     {"L*": 64.3, "a*": 10.5, "b*": 21.4},
+            },
+            "skin_type": "Mista",
+            "source":    "Demo sintetico · TAN-WARM",
+        }
+        st.session_state.uploaded_files_bytes = {}
+        st.session_state.zone_map = {}
+        st.rerun()
+
     st.caption("CIE 15:2004 · Del Bino et al. (2006)")
 
 
@@ -620,6 +641,49 @@ elif nav == "🎯 Matching Prodotti":
                 "memorizza i match nel database assieme a questo riferimento anagrafico."
             )
 
+    # Storico trend — mostra solo se il profilo è collegato a un cliente salvato
+    if sd.get("saved_client_id"):
+        db_hist = get_session()
+        try:
+            history = db_hist.query(SkinProfile)\
+                .filter(SkinProfile.saved_client_skin_id == sd["saved_client_id"])\
+                .order_by(SkinProfile.created_at.asc())\
+                .all()
+        finally:
+            db_hist.close()
+
+        if len(history) >= 2:
+            with st.expander(f"📈 Storico analisi — {len(history)} misurazioni", expanded=False):
+                import pandas as pd
+                hist_data = [{
+                    "Data":      h.created_at.strftime("%d/%m/%Y") if h.created_at else "—",
+                    "L* (luce)": round(h.L_weighted, 1),
+                    "a* (ross)": round(h.a_weighted, 1),
+                    "b* (cald)": round(h.b_weighted, 1),
+                    "ITA°":      round(h.ITA_deg, 1) if h.ITA_deg else "—",
+                    "Categoria": h.category or "—",
+                } for h in history]
+                st.dataframe(hist_data, use_container_width=True, hide_index=True)
+
+                l_vals = [h.L_weighted for h in history]
+                b_vals = [h.b_weighted for h in history]
+                dates  = [h.created_at.strftime("%d/%m") if h.created_at else str(i) for i,h in enumerate(history)]
+
+                col_l, col_b = st.columns(2)
+                with col_l:
+                    st.caption("L* nel tempo (luminosità — abbronzatura)")
+                    st.line_chart({"L*": l_vals}, height=150)
+                with col_b:
+                    st.caption("b* nel tempo (calore undertone — stagionalità)")
+                    st.line_chart({"b*": b_vals}, height=150)
+
+                delta_l = l_vals[-1] - l_vals[0]
+                delta_b = b_vals[-1] - b_vals[0]
+                st.caption(
+                    f"Variazione totale: L* {delta_l:+.1f} · b* {delta_b:+.1f}  "
+                    f"({'più abbronzata/o' if delta_l < -2 else 'più chiara/o' if delta_l > 2 else 'stabile'})"
+                )
+
     st.divider()
 
     # Filtri matching
@@ -657,6 +721,41 @@ elif nav == "🎯 Matching Prodotti":
         st.divider()
         show_match_results(results)
 
+        # Export PDF
+        if PDF_AVAILABLE and results:
+            st.divider()
+            if st.button("📄 Scarica report PDF", key="btn_pdf"):
+                pdf = FPDF()
+                pdf.add_page()
+                pdf.set_font("Helvetica", "B", 16)
+                pdf.cell(0, 10, "SkinMatch AI — Report Analisi Pelle", ln=True)
+                pdf.set_font("Helvetica", "", 11)
+                pdf.cell(0, 8, f"SkinID: {skin_id}", ln=True)
+                pdf.cell(0, 8, f"Categoria ITA: {categoria}  |  Undertone: {undertone}  |  ITA: {avg_ita:.1f}", ln=True)
+                pdf.cell(0, 8, f"Reactivity Index: {ri_data['livello']}  |  Sorgente: {sd['source']}", ln=True)
+                pdf.ln(4)
+                pdf.set_font("Helvetica", "B", 12)
+                pdf.cell(0, 8, "Top Match Fondotinta", ln=True)
+                pdf.set_font("Helvetica", "", 10)
+                for i, m in enumerate(results[:5], 1):
+                    p = m["product"]
+                    pdf.cell(0, 7,
+                        f"{i}. {p.brand} — {p.name}  |  Score: {m['score']:.3f}  |  DE: {m['delta_e']:.2f}  |  {m['badge']}",
+                        ln=True)
+                pdf.ln(4)
+                pdf.set_font("Helvetica", "I", 8)
+                pdf.cell(0, 6, "Generato da SkinMatch AI — skinmatch.ai", ln=True)
+                pdf_bytes = bytes(pdf.output())
+                st.download_button(
+                    label="⬇ Download PDF",
+                    data=pdf_bytes,
+                    file_name=f"SkinMatch_{skin_id}.pdf",
+                    mime="application/pdf",
+                    key="dl_pdf"
+                )
+        elif not PDF_AVAILABLE:
+            st.caption("_Per abilitare l'export PDF aggiungi `fpdf2` a requirements.txt_")
+
         # Salva su DB
         db2 = get_session()
         try:
@@ -678,6 +777,9 @@ elif nav == "🎯 Matching Prodotti":
                     score=m["score"], rank=rank,
                 ))
             db2.commit()
+        except Exception as e:
+            db2.rollback()
+            st.warning(f"Match trovati ma errore nel salvataggio storico: {e}")
         finally:
             db2.close()
 
@@ -802,7 +904,6 @@ elif nav == "➕ Aggiungi Prodotto":
         if not brand or not line or not name:
             st.error("Compila i campi obbligatori: Brand, Linea, Nome shade.")
         else:
-            import uuid as _uuid
             pid = str(_uuid.uuid4())
             db  = get_session()
             try:
