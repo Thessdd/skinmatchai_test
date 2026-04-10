@@ -10,6 +10,8 @@ import streamlit as st
 import numpy as np
 from PIL import Image
 import pillow_heif
+import io as _io
+import re
 from database import (
     init_db, seed_demo_data, get_session,
     Product, ProductColorimetry, SkinProfile, Match, SavedClientSkin,
@@ -111,19 +113,6 @@ class SkinIDEngine:
         k = {"Oleosa":1.15,"Mista":1.05,"Secca / Normale":0.95}.get(skin_type,1.05)
         ri = round(b*k,2)
         return {"valore":ri, "livello":"ALTO" if ri>21 else "MEDIO" if ri>17 else "BASSO"}
-
-    def process_image(self, f, zona):
-        img = np.array(Image.open(f).convert("RGB"))
-        h,w = img.shape[:2]
-        roi_map = {
-            "Fronte":   (int(h*.15),int(h*.40),int(w*.30),int(w*.70)),
-            "Guancia":  (int(h*.35),int(h*.65),int(w*.20),int(w*.80)),
-            "Mandibola":(int(h*.65),int(h*.90),int(w*.25),int(w*.75)),
-        }
-        y1,y2,x1,x2 = roi_map.get(zona,(int(h*.35),int(h*.65),int(w*.35),int(w*.65)))
-        roi = img[y1:y2,x1:x2]
-        if roi.size==0: roi = img[int(h*.35):int(h*.65),int(w*.35):int(w*.65)]
-        return np.median(roi.reshape(-1,3), axis=0)
 
     def build_skin_id(self, cat, L, undertone, a, ri):
         return f"{cat}-{int(L)}-{undertone}-a{int(a)}-RI-{ri}"
@@ -282,9 +271,6 @@ if nav == "🔬 Analisi Pelle":
     if modo == "📷 Foto":
         st.info("Luce naturale diffusa · viso 80% del frame · no make up · no filtri")
 
-        import io as _io
-        from PIL import Image as _PIL
-
         files = st.file_uploader("3 immagini (JPG/PNG/HEIC)",
                                  type=["jpg","jpeg","png","heic"],
                                  accept_multiple_files=True, key="skin_up")
@@ -296,19 +282,17 @@ if nav == "🔬 Analisi Pelle":
             new_names = sorted(f.name for f in files)
             old_names = sorted(st.session_state.get("uploaded_files_bytes", {}).keys())
             if new_names != old_names:
-                import io as _io2
-                from PIL import Image as _PIL2
                 resized = {}
                 MAX_SAVE = 800
                 for f in files:
                     raw = f.read()
                     try:
-                        img = _PIL2.open(_io2.BytesIO(raw)).convert("RGB")
+                        img = Image.open(_io.BytesIO(raw)).convert("RGB")
                         wo, ho = img.size
                         if max(wo, ho) > MAX_SAVE:
                             ratio = MAX_SAVE / max(wo, ho)
-                            img = img.resize((int(wo*ratio), int(ho*ratio)), _PIL2.LANCZOS)
-                        buf = _io2.BytesIO()
+                            img = img.resize((int(wo*ratio), int(ho*ratio)), Image.LANCZOS)
+                        buf = _io.BytesIO()
                         img.save(buf, format="JPEG", quality=92)
                         resized[f.name] = buf.getvalue()
                         del img, buf
@@ -360,12 +344,12 @@ if nav == "🔬 Analisi Pelle":
                                 if zona == "Seleziona...":
                                     continue
                                 try:
-                                    pil_img = _PIL.open(_io.BytesIO(saved[fname])).convert("RGB")
+                                    pil_img = Image.open(_io.BytesIO(saved[fname])).convert("RGB")
                                     MAX_DIM = 800
                                     w_orig, h_orig = pil_img.size
                                     if max(w_orig, h_orig) > MAX_DIM:
                                         ratio   = MAX_DIM / max(w_orig, h_orig)
-                                        pil_img = pil_img.resize((int(w_orig*ratio), int(h_orig*ratio)), _PIL.LANCZOS)
+                                        pil_img = pil_img.resize((int(w_orig*ratio), int(h_orig*ratio)), Image.LANCZOS)
                                     img_array = np.array(pil_img)
                                     del pil_img
                                     h, w_img  = img_array.shape[:2]
@@ -389,17 +373,14 @@ if nav == "🔬 Analisi Pelle":
                                     continue
 
                         if not res:
-                            st.error("Nessun risultato prodotto — zone non mappate correttamente.")
+                            st.error("Nessun risultato prodotto — verifica che le zone siano selezionate correttamente.")
                         else:
-                            if res:
-                                st.session_state.skin_data = {
-                                    "zones":     res,
-                                    "skin_type": skin_type,
-                                    "source":    "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato"),
-                                }
-                                st.rerun()
-                            else:
-                                st.error("Nessun risultato — controlla che le zone siano selezionate correttamente.")
+                            st.session_state.skin_data = {
+                                "zones":     res,
+                                "skin_type": skin_type,
+                                "source":    "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato"),
+                            }
+                            st.rerun()
 
     # ── Nix manuale ───────────────────────────────────────────────────────────
     else:
@@ -486,8 +467,8 @@ if nav == "🔬 Analisi Pelle":
                 em_t, ph_t = (em or "").strip(), (ph or "").strip()
                 if not fn_t or not ln_t or not em_t or not ph_t:
                     st.error("Compila tutti i campi obbligatori.")
-                elif "@" not in em_t:
-                    st.error("Inserisci un indirizzo email valido.")
+                elif not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', em_t):
+                    st.error("Inserisci un indirizzo email valido (es. nome@dominio.it).")
                 else:
                     db_sv = get_session()
                     try:
@@ -531,6 +512,11 @@ if nav == "🔬 Analisi Pelle":
             st.session_state.skin_data = None
             st.session_state.uploaded_files_bytes = {}
             st.session_state.zone_map = {}
+            # Reset anche del radio salvataggio cliente
+            for k in ["save_skin_prompt", "client_save_fn", "client_save_ln",
+                      "client_save_em", "client_save_ph"]:
+                if k in st.session_state:
+                    del st.session_state[k]
             st.rerun()
 
 
