@@ -215,7 +215,7 @@ st.set_page_config(page_title="SkinMatch AI", page_icon="🧬", layout="wide")
 # Session state
 for k,v in [("engine",SkinIDEngine()),("calibrator",ColorCheckerCalibrator()),
             ("calib_result",None),("skin_data",None),
-            ("uploaded_files_bytes",{}),("zone_map",{})]:
+            ("uploaded_files_bytes",{}),("zone_map",{}),("show_result",False)]:
     if k not in st.session_state: st.session_state[k] = v
 
 engine     = st.session_state.engine
@@ -296,8 +296,25 @@ if nav == "🔬 Analisi Pelle":
             new_names = sorted(f.name for f in files)
             old_names = sorted(st.session_state.get("uploaded_files_bytes", {}).keys())
             if new_names != old_names:
-                # Solo se sono file davvero nuovi — salva e resetta zone
-                st.session_state.uploaded_files_bytes = {f.name: f.read() for f in files}
+                import io as _io2
+                from PIL import Image as _PIL2
+                resized = {}
+                MAX_SAVE = 800
+                for f in files:
+                    raw = f.read()
+                    try:
+                        img = _PIL2.open(_io2.BytesIO(raw)).convert("RGB")
+                        wo, ho = img.size
+                        if max(wo, ho) > MAX_SAVE:
+                            ratio = MAX_SAVE / max(wo, ho)
+                            img = img.resize((int(wo*ratio), int(ho*ratio)), _PIL2.LANCZOS)
+                        buf = _io2.BytesIO()
+                        img.save(buf, format="JPEG", quality=92)
+                        resized[f.name] = buf.getvalue()
+                        del img, buf
+                    except Exception:
+                        resized[f.name] = raw
+                st.session_state.uploaded_files_bytes = resized
                 st.session_state.zone_map = {}
         # Se files è vuoto ma abbiamo già i bytes salvati: non fare nulla.
         # Il rerun post-ANALIZZA non deve cancellare i dati in session_state.
@@ -338,14 +355,19 @@ if nav == "🔬 Analisi Pelle":
                         st.error("Seleziona 3 zone distinte (Fronte, Guancia, Mandibola) prima di analizzare.")
                     else:
                         res = {}
-                        errori = []
                         with st.spinner("Elaborazione..."):
                             for fname, zona in zm.items():
                                 if zona == "Seleziona...":
                                     continue
                                 try:
-                                    pil_img   = _PIL.open(_io.BytesIO(saved[fname])).convert("RGB")
+                                    pil_img = _PIL.open(_io.BytesIO(saved[fname])).convert("RGB")
+                                    MAX_DIM = 800
+                                    w_orig, h_orig = pil_img.size
+                                    if max(w_orig, h_orig) > MAX_DIM:
+                                        ratio   = MAX_DIM / max(w_orig, h_orig)
+                                        pil_img = pil_img.resize((int(w_orig*ratio), int(h_orig*ratio)), _PIL.LANCZOS)
                                     img_array = np.array(pil_img)
+                                    del pil_img
                                     h, w_img  = img_array.shape[:2]
                                     roi_coords = {
                                         "Fronte":    (int(h*.15),int(h*.40),int(w_img*.30),int(w_img*.70)),
@@ -363,20 +385,21 @@ if nav == "🔬 Analisi Pelle":
                                         "L*": float(L), "a*": float(a), "b*": float(b),
                                     }
                                 except Exception as e:
-                                    errori.append(f"{zona}: {e}")
+                                    st.error(f"Errore su {zona}: {e}")
+                                    continue
 
-                        if errori:
-                            st.error("Errori durante elaborazione: " + " | ".join(errori))
-                        elif not res:
+                        if not res:
                             st.error("Nessun risultato prodotto — zone non mappate correttamente.")
                         else:
-                            st.session_state.skin_data = {
-                                "zones":     res,
-                                "skin_type": skin_type,
-                                "source":    "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato"),
-                                "analisi_ok": True,
-                            }
-                            st.success(f"Analisi completata — {len(res)} zone elaborate.")
+                            if res:
+                                st.session_state.skin_data = {
+                                    "zones":     res,
+                                    "skin_type": skin_type,
+                                    "source":    "Foto · " + ("calibrato" if calibrator.is_active else "non calibrato"),
+                                }
+                                st.rerun()
+                            else:
+                                st.error("Nessun risultato — controlla che le zone siano selezionate correttamente.")
 
     # ── Nix manuale ───────────────────────────────────────────────────────────
     else:
@@ -446,31 +469,33 @@ if nav == "🔬 Analisi Pelle":
         )
         save_prompt = st.radio(
             "Vuoi salvare questo SkinID™ con nome, cognome, email e telefono?",
-            ["No", "Sì"],
+            ("No", "Sì"),
             horizontal=True,
             key="save_skin_prompt",
         )
-        if save_prompt == "Sì":
-            with st.form("save_client_skin_form", clear_on_submit=False):
-                sr1, sr2 = st.columns(2)
-                fn = sr1.text_input("Nome *")
-                ln = sr2.text_input("Cognome *")
-                em = st.text_input("Email *")
-                ph = st.text_input("Telefono *")
-                do_save = st.form_submit_button("Salva nel database", type="primary")
-            if do_save:
-                if not (fn or "").strip() or not (ln or "").strip() or not (em or "").strip() or not (ph or "").strip():
+        want_save = save_prompt == "Sì"
+        if want_save:
+            # Niente st.columns dentro st.form: con layout annidato i campi non compaiono.
+            st.markdown("**Dati da memorizzare nel database**")
+            fn = st.text_input("Nome *", key="client_save_fn")
+            ln = st.text_input("Cognome *", key="client_save_ln")
+            em = st.text_input("Email *", key="client_save_em")
+            ph = st.text_input("Telefono *", key="client_save_ph")
+            if st.button("Salva nel database", type="primary", key="btn_save_client"):
+                fn_t, ln_t = (fn or "").strip(), (ln or "").strip()
+                em_t, ph_t = (em or "").strip(), (ph or "").strip()
+                if not fn_t or not ln_t or not em_t or not ph_t:
                     st.error("Compila tutti i campi obbligatori.")
-                elif "@" not in (em or ""):
+                elif "@" not in em_t:
                     st.error("Inserisci un indirizzo email valido.")
                 else:
                     db_sv = get_session()
                     try:
                         row = SavedClientSkin(
-                            first_name=fn.strip(),
-                            last_name=ln.strip(),
-                            email=em.strip().lower(),
-                            phone=ph.strip(),
+                            first_name=fn_t,
+                            last_name=ln_t,
+                            email=em_t.lower(),
+                            phone=ph_t,
                             zones_json=json.loads(json.dumps(zones)),
                             skin_type=s_type,
                             source=s_source,
@@ -482,7 +507,7 @@ if nav == "🔬 Analisi Pelle":
                         db_sv.commit()
                         st.session_state.skin_data["saved_client_id"] = new_sid
                         st.success(
-                            f"Profilo salvato per **{fn.strip()} {ln.strip()}**. "
+                            f"Profilo salvato per **{fn_t} {ln_t}**. "
                             "Puoi richiamarlo da **Matching Prodotti** → SkinID salvati. "
                             "I risultati **TROVA MATCH** saranno collegati a questo cliente."
                         )
